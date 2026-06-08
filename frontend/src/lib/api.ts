@@ -12,6 +12,8 @@ export interface Player {
   bowling_avg: number;
   base_price: number;
   pitch_suitability: string;
+  ipl_team?: string;
+  ipl_season?: number;
 }
 
 export interface RoomPlayer {

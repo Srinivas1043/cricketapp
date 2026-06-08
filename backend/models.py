@@ -2,7 +2,11 @@ import uuid
 from datetime import datetime
 from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
-from backend.database import Base
+
+try:
+    from backend.database import Base
+except ModuleNotFoundError:
+    from database import Base
 
 class Room(Base):
     __tablename__ = "rooms"
@@ -54,6 +58,8 @@ class Player(Base):
     bowling_avg = Column(Float, default=0.0)
     base_price = Column(Float, nullable=False) # in Crores (₹)
     pitch_suitability = Column(String, default="NEUTRAL") # SPIN, PACE, NEUTRAL
+    ipl_team = Column(String, nullable=True) # Original IPL team (e.g., "CSK", "MI")
+    ipl_season = Column(Integer, nullable=True) # IPL season year (e.g., 2023, 2024)
 
 
 class RoomPlayer(Base):

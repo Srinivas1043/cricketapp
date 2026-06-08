@@ -51,7 +51,10 @@ export default function GamePage() {
   const [draftSearchQuery, setDraftSearchQuery] = useState('');
   const [draftRoleTab, setDraftRoleTab] = useState<'all' | 'batsman' | 'wicketkeeper' | 'allrounder' | 'bowler'>('all');
   const [draftNationalityFilter, setDraftNationalityFilter] = useState<'all' | 'Indian' | 'Overseas'>('all');
+  const [draftTeamFilter, setDraftTeamFilter] = useState<string>('all'); // IPL team filter (CSK, MI, RCB, etc)
+  const [draftSeasonFilter, setDraftSeasonFilter] = useState<string>('all'); // IPL season filter (2023, 2024, etc)
   const [draftingPlayerId, setDraftingPlayerId] = useState<string | null>(null);
+  const [playerCarouselView, setPlayerCarouselView] = useState(false); // NEW: toggle carousel view
 
   // Match center state
   const [activeMatch, setActiveMatch] = useState<Match | null>(null);
@@ -65,6 +68,7 @@ export default function GamePage() {
   // Refs
   const wsRef = useRef<WebSocket | null>(null);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const playerCarouselRef = useRef<HTMLDivElement>(null); // NEW: for carousel scrolling
   const [timerDisplay, setTimerDisplay] = useState(15);
   const commEndRef = useRef<HTMLDivElement>(null);
 
@@ -235,34 +239,56 @@ export default function GamePage() {
     }
   };
 
-  // Timer Countdown logic
+  // Timer Countdown logic - FIXED to tick properly
   useEffect(() => {
     if (!roomState?.auction_state) return;
     
+    // Clear any existing interval before setting a new one
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+
     const targetTime = roomState.auction_state.rtm_active 
       ? roomState.auction_state.rtm_timer_ends_at 
       : roomState.auction_state.timer_ends_at;
       
-    if (!targetTime) return;
-
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    if (!targetTime) {
+      setTimerDisplay(0);
+      return;
+    }
 
     const calcTime = () => {
-      const diff = new Date(targetTime).getTime() - new Date().getTime();
-      const seconds = Math.max(0, Math.ceil(diff / 1000));
-      setTimerDisplay(seconds);
-      if (seconds <= 0 && timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current);
+      try {
+        const now = new Date().getTime();
+        const target = new Date(targetTime).getTime();
+        const diff = target - now;
+        const seconds = Math.max(0, Math.ceil(diff / 1000));
+        setTimerDisplay(seconds);
+        
+        // Stop updating when timer reaches 0
+        if (seconds <= 0 && timerIntervalRef.current) {
+          clearInterval(timerIntervalRef.current);
+          timerIntervalRef.current = null;
+        }
+      } catch (e) {
+        console.error('Timer calculation error:', e);
       }
     };
 
+    // Call immediately to set initial value
     calcTime();
-    timerIntervalRef.current = setInterval(calcTime, 1000);
+    
+    // Then set interval for continuous updates (500ms = 2x per second for smoother display)
+    timerIntervalRef.current = setInterval(calcTime, 500);
 
     return () => {
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
     };
-  }, [roomState?.auction_state?.timer_ends_at, roomState?.auction_state?.rtm_timer_ends_at, roomState?.auction_state?.rtm_active]);
+  }, [roomState?.auction_state]);
 
   // Fetch standings and fixtures once auction is finished
   const fetchTournamentInfo = async () => {
@@ -915,6 +941,14 @@ export default function GamePage() {
       if (draftNationalityFilter !== 'all') {
         if (rp.player.nationality !== draftNationalityFilter) return false;
       }
+      // 4. IPL Team Filter
+      if (draftTeamFilter !== 'all') {
+        if (rp.player.ipl_team !== draftTeamFilter) return false;
+      }
+      // 5. IPL Season Filter
+      if (draftSeasonFilter !== 'all') {
+        if (rp.player.ipl_season !== parseInt(draftSeasonFilter)) return false;
+      }
       return true;
     });
 
@@ -927,41 +961,41 @@ export default function GamePage() {
 
     return (
       <main className="min-h-screen bg-[#090b0d] text-[#f8fafc] flex flex-col animate-in fade-in duration-300">
-        {/* Top Header */}
-        <header className="bg-zinc-950 border-b border-zinc-800 py-4 px-6 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-50 shadow-md">
-          <div className="flex items-center gap-4">
-            <span className="text-sm font-black tracking-tight bg-gradient-to-r from-emerald-400 to-amber-300 bg-clip-text text-transparent">
-              IPL SNAKE DRAFT ARENA
+        {/* Top Header - Mobile Responsive */}
+        <header className="bg-zinc-950 border-b border-zinc-800 py-3 md:py-4 px-4 md:px-6 flex flex-col md:flex-row md:flex-wrap items-start md:items-center justify-between gap-3 md:gap-4 sticky top-0 z-50 shadow-md">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 flex-grow">
+            <span className="text-xs md:text-sm font-black tracking-tight bg-gradient-to-r from-emerald-400 to-amber-300 bg-clip-text text-transparent">
+              IPL SNAKE DRAFT
             </span>
-            <div className="text-zinc-600 text-xs">|</div>
-            <span className="text-xs font-bold text-zinc-400">Room Code: {roomCode}</span>
+            <div className="text-zinc-600 text-xs hidden sm:block">|</div>
+            <span className="text-[10px] font-bold text-zinc-400">Room: {roomCode}</span>
             <button 
               onClick={clearSession}
               className="text-[10px] font-bold text-red-400 hover:text-red-300 px-2 py-1 bg-red-950/20 hover:bg-red-950/40 border border-red-950 rounded-lg transition-all"
             >
-              Exit Room
+              Exit
             </button>
           </div>
 
-          <div className="flex items-center gap-6">
-            <div className="text-right">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">Your Squad Count</span>
-              <span className="text-sm font-extrabold text-zinc-200">{myTeam?.players?.length || 0} / {max_squad_size || 15} Players</span>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full sm:w-auto">
+            <div className="text-right text-xs">
+              <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-wider block">Squad</span>
+              <span className="text-xs md:text-sm font-extrabold text-zinc-200">{myTeam?.players?.length || 0}/{max_squad_size || 15}</span>
             </div>
-            <div className="text-right border-l border-zinc-800 pl-4">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">Roster Composition</span>
-              <span className="text-xs font-semibold text-emerald-400">
+            <div className="text-right text-xs border-l border-zinc-800 pl-3">
+              <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-wider block">Composition</span>
+              <span className="text-[10px] md:text-xs font-semibold text-emerald-400">
                 🏏 {userBatsmen.length}/5 | 🧤 {userKeepers.length}/2 | ⚡ {userAllrounders.length}/3 | ⚾ {userBowlers.length}/5
               </span>
             </div>
           </div>
         </header>
 
-        {/* Main Workspace Layout */}
-        <div className="flex-grow grid grid-cols-1 lg:grid-cols-4 gap-6 p-6 overflow-hidden max-h-[calc(100vh-80px)]">
+        {/* Main Workspace Layout - Mobile Responsive Grid */}
+        <div className="flex-grow grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 p-3 md:p-6 overflow-hidden max-h-[calc(100vh-100px)]">
           
-          {/* Column 1 (Left): Franchises Status list */}
-          <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-5 flex flex-col gap-4 overflow-y-auto max-h-full">
+          {/* Column 1 (Left): Franchises Status list - Hidden on mobile, 25% on lg */}
+          <section className="hidden md:flex bg-zinc-900/40 border border-zinc-800 rounded-3xl p-4 md:p-5 flex-col gap-4 overflow-y-auto max-h-full">
             <div className="space-y-3 pb-2 border-b border-zinc-800">
               <h2 className="text-xs uppercase font-extrabold tracking-wider text-zinc-400 flex items-center gap-2">
                 <Users className="w-4 h-4 text-emerald-500" /> Draft Franchises
@@ -1114,9 +1148,9 @@ export default function GamePage() {
               
               {/* Category selector & Filter inputs */}
               <div className="space-y-3 flex-shrink-0">
-                <div className="flex flex-col sm:flex-row gap-3 items-stretch justify-between">
-                  {/* Search and Nationality filter */}
-                  <div className="flex-grow flex gap-2">
+                <div className="flex flex-col gap-3 justify-between">
+                  {/* Search and Nationality filter row */}
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <input 
                       type="text"
                       placeholder="🔍 Search available players by name..."
@@ -1128,12 +1162,57 @@ export default function GamePage() {
                     <select
                       value={draftNationalityFilter}
                       onChange={(e: any) => setDraftNationalityFilter(e.target.value)}
-                      className="bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-2 py-2 text-xs focus:outline-none text-zinc-300"
+                      className="bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-2 py-2 text-xs focus:outline-none text-zinc-300 whitespace-nowrap"
                     >
                       <option value="all">All Nations</option>
                       <option value="Indian">🇮🇳 Indian</option>
                       <option value="Overseas">✈️ Overseas</option>
                     </select>
+
+                    {/* IPL Team Filter */}
+                    <select
+                      value={draftTeamFilter}
+                      onChange={(e: any) => setDraftTeamFilter(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-2 py-2 text-xs focus:outline-none text-zinc-300 whitespace-nowrap"
+                    >
+                      <option value="all">All IPL Teams</option>
+                      <option value="CSK">CSK</option>
+                      <option value="MI">MI</option>
+                      <option value="RCB">RCB</option>
+                      <option value="DC">DC</option>
+                      <option value="KKR">KKR</option>
+                      <option value="SRH">SRH</option>
+                      <option value="RR">RR</option>
+                      <option value="PBKS">PBKS</option>
+                      <option value="GT">GT</option>
+                      <option value="LSG">LSG</option>
+                      <option value="BAN">BAN</option>
+                    </select>
+
+                    {/* IPL Season Filter */}
+                    <select
+                      value={draftSeasonFilter}
+                      onChange={(e: any) => setDraftSeasonFilter(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-2 py-2 text-xs focus:outline-none text-zinc-300 whitespace-nowrap"
+                    >
+                      <option value="all">All Seasons</option>
+                      <option value="2024">2024</option>
+                      <option value="2023">2023</option>
+                      <option value="2022">2022</option>
+                      <option value="2021">2021</option>
+                    </select>
+
+                    {/* View toggle - carousel or list */}
+                    <button
+                      onClick={() => setPlayerCarouselView(!playerCarouselView)}
+                      className={`px-3 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+                        playerCarouselView
+                          ? 'bg-amber-950/40 border border-amber-700 text-amber-400'
+                          : 'bg-zinc-950 border border-zinc-855 text-zinc-400 hover:text-zinc-300'
+                      }`}
+                    >
+                      {playerCarouselView ? '🎠 Carousel' : '📋 List'}
+                    </button>
                   </div>
                 </div>
 
@@ -1164,91 +1243,244 @@ export default function GamePage() {
                 </div>
               </div>
 
-              {/* Player list scroll viewport */}
-              <div className="flex-grow overflow-y-auto pr-1 space-y-3 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
-                {sortedFilteredUnsold.length === 0 ? (
-                  <div className="text-center py-16 text-zinc-500 italic text-xs">
-                    No available players match your search filter.
-                  </div>
-                ) : (
-                  sortedFilteredUnsold.map((rp) => {
-                    const isDraftingThis = draftingPlayerId === rp.id;
-                    const role = rp.player.role.toLowerCase();
-                    return (
+              {/* Player list/carousel viewport */}
+              {!playerCarouselView ? (
+                // LIST VIEW
+                <div className="flex-grow overflow-y-auto pr-1 space-y-3 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+                  {sortedFilteredUnsold.length === 0 ? (
+                    <div className="text-center py-16 text-zinc-500 italic text-xs">
+                      No available players match your search filter.
+                    </div>
+                  ) : (
+                    sortedFilteredUnsold.map((rp) => {
+                      const isDraftingThis = draftingPlayerId === rp.id;
+                      const role = rp.player.role.toLowerCase();
+                      return (
+                        <div 
+                          key={rp.id}
+                          className="bg-zinc-950/50 hover:bg-zinc-950/90 border border-zinc-900 hover:border-zinc-800 rounded-2xl p-3 md:p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 md:gap-4 transition-all"
+                        >
+                          {/* Player name, role, details */}
+                          <div className="space-y-1 flex-grow min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-extrabold text-sm text-zinc-200 truncate">{rp.player.name}</span>
+                              <span className="text-[10px] bg-zinc-900 text-zinc-400 px-2 py-0.5 border border-zinc-800 rounded uppercase font-semibold flex-shrink-0">
+                                {rp.player.nationality === 'Indian' ? '🇮🇳 IND' : '✈️ OVS'}
+                              </span>
+                              <span className="text-xs flex-shrink-0">{getRoleIcon(rp.player.role)}</span>
+                            </div>
+                            
+                            {/* Role detail summary */}
+                            <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
+                              {rp.player.role} • Pitch: {rp.player.pitch_suitability} • Value: ₹{rp.player.base_price} Cr
+                            </div>
+
+                            {/* IPL Team & Season Badge */}
+                            {rp.player.ipl_team && (
+                              <div className="text-[9px] text-amber-400 font-semibold">
+                                🏆 {rp.player.ipl_team} • {rp.player.ipl_season || 'Recent'}
+                              </div>
+                            )}
+
+                            {/* Stats Grid - responsive */}
+                            <div className="flex flex-wrap items-center gap-2 md:gap-4 text-[9px] md:text-[10px] font-semibold text-zinc-400 pt-1.5">
+                              {role !== 'bowler' && (
+                                <>
+                                  <span>Bat Avg: <strong className="text-zinc-200">{rp.player.batting_avg}</strong></span>
+                                  <span className="hidden sm:inline">SR: <strong className="text-zinc-200">{rp.player.strike_rate}</strong></span>
+                                </>
+                              )}
+                              {role !== 'batsman' && (
+                                <>
+                                  <span>Econ: <strong className="text-zinc-200">{rp.player.bowling_economy}</strong></span>
+                                  <span className="hidden sm:inline">Bowl Avg: <strong className="text-zinc-200">{rp.player.bowling_avg}</strong></span>
+                                </>
+                              )}
+                              <span>Form: <strong className="text-zinc-300">{rp.current_form}</strong></span>
+                            </div>
+                          </div>
+
+                          {/* Action draft button */}
+                          <div className="flex-shrink-0 w-full md:w-auto">
+                            <button
+                              onClick={() => handleDraftPlayer(rp.id)}
+                              disabled={!isMyTurn || draftingPlayerId !== null}
+                              className={`w-full md:w-auto px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 ${
+                                isMyTurn
+                                  ? isDraftingThis
+                                    ? 'bg-zinc-850 text-emerald-400 border border-zinc-750'
+                                    : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black'
+                                  : 'bg-zinc-900 border border-zinc-850 text-zinc-650 cursor-not-allowed shadow-none'
+                              }`}
+                            >
+                              {isDraftingThis ? (
+                                <>
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                  <span className="hidden sm:inline">Drafting...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="hidden sm:inline">Draft</span>
+                                  <span className="sm:hidden">Select</span>
+                                  <ChevronRight className="w-3.5 h-3.5" />
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              ) : (
+                // CAROUSEL VIEW
+                <div className="flex-grow flex flex-col gap-2 overflow-hidden">
+                  {sortedFilteredUnsold.length === 0 ? (
+                    <div className="text-center py-16 text-zinc-500 italic text-xs">
+                      No available players match your search filter.
+                    </div>
+                  ) : (
+                    <>
+                      {/* Carousel Container */}
                       <div 
-                        key={rp.id}
-                        className="bg-zinc-950/50 hover:bg-zinc-950/90 border border-zinc-900 hover:border-zinc-800 rounded-2xl p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-all"
+                        ref={playerCarouselRef}
+                        className="flex overflow-x-auto gap-3 pb-2 scrollbar-thin scrollbar-thumb-emerald-700 scrollbar-track-zinc-900 flex-grow"
+                        style={{ scrollBehavior: 'smooth' }}
                       >
-                        {/* Player name, role, details */}
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-extrabold text-sm text-zinc-200">{rp.player.name}</span>
-                            <span className="text-[10px] bg-zinc-900 text-zinc-400 px-2 py-0.5 border border-zinc-800 rounded uppercase font-semibold">
-                              {rp.player.nationality === 'Indian' ? '🇮🇳 IND' : '✈️ OVS'}
-                            </span>
-                            <span className="text-xs">{getRoleIcon(rp.player.role)}</span>
-                          </div>
-                          
-                          {/* Role detail summary */}
-                          <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
-                            {rp.player.role} • Pitch: {rp.player.pitch_suitability} • Value: ₹{rp.player.base_price} Cr
-                          </div>
+                        {sortedFilteredUnsold.map((rp, idx) => {
+                          const isDraftingThis = draftingPlayerId === rp.id;
+                          const role = rp.player.role.toLowerCase();
+                          return (
+                            <div
+                              key={rp.id}
+                              className="flex-shrink-0 w-72 bg-gradient-to-br from-zinc-900 to-zinc-950 border border-zinc-800 hover:border-emerald-500 rounded-2xl p-4 transition-all hover:shadow-lg hover:shadow-emerald-500/20 flex flex-col justify-between"
+                            >
+                              {/* Player Info */}
+                              <div className="space-y-3">
+                                <div className="space-y-1">
+                                  <h3 className="font-extrabold text-lg text-zinc-200">{rp.player.name}</h3>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs bg-zinc-900 text-zinc-400 px-2 py-0.5 border border-zinc-800 rounded uppercase font-semibold">
+                                      {rp.player.nationality === 'Indian' ? '🇮🇳 Indian' : '✈️ Overseas'}
+                                    </span>
+                                    <span className="text-2xl">{getRoleIcon(rp.player.role)}</span>
+                                  </div>
+                                </div>
 
-                          {/* Stats Grid */}
-                          <div className="flex items-center gap-4 text-[10px] font-semibold text-zinc-400 pt-1.5">
-                            {role !== 'bowler' && (
-                              <>
-                                <span>Bat Avg: <strong className="text-zinc-200">{rp.player.batting_avg}</strong></span>
-                                <span>Strike Rate: <strong className="text-zinc-200">{rp.player.strike_rate}</strong></span>
-                              </>
-                            )}
-                            {role !== 'batsman' && (
-                              <>
-                                <span>Econ: <strong className="text-zinc-200">{rp.player.bowling_economy}</strong></span>
-                                <span>Bowl Avg: <strong className="text-zinc-200">{rp.player.bowling_avg}</strong></span>
-                              </>
-                            )}
-                            <span>Form: <strong className="text-zinc-300">{rp.current_form}</strong></span>
-                          </div>
-                        </div>
+                                {/* Role and Details */}
+                                <div className="bg-zinc-950/60 rounded-lg p-2 space-y-1">
+                                  <div className="text-[10px] text-zinc-400 font-bold uppercase">
+                                    {rp.player.role}
+                                  </div>
+                                  <div className="text-sm font-extrabold text-emerald-400">
+                                    ₹{rp.player.base_price} Cr
+                                  </div>
+                                  <div className="text-[9px] text-zinc-500">
+                                    Pitch Suit: <span className="text-zinc-300">{rp.player.pitch_suitability}</span>
+                                  </div>
+                                  {/* IPL Team & Season */}
+                                  {rp.player.ipl_team && (
+                                    <div className="text-[9px] text-amber-400 font-semibold pt-1 border-t border-zinc-800">
+                                      🏆 {rp.player.ipl_team} • {rp.player.ipl_season}
+                                    </div>
+                                  )}
+                                </div>
 
-                        {/* Action draft button */}
-                        <div className="flex-shrink-0 w-full sm:w-auto">
-                          <button
-                            onClick={() => handleDraftPlayer(rp.id)}
-                            disabled={!isMyTurn || draftingPlayerId !== null}
-                            className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 ${
-                              isMyTurn
-                                ? isDraftingThis
-                                  ? 'bg-zinc-850 text-emerald-400 border border-zinc-750'
-                                  : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black'
-                                : 'bg-zinc-900 border border-zinc-850 text-zinc-650 cursor-not-allowed shadow-none'
-                            }`}
-                          >
-                            {isDraftingThis ? (
-                              <>
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                Drafting...
-                              </>
-                            ) : (
-                              <>
-                                <span>Draft Player</span>
-                                <ChevronRight className="w-3.5 h-3.5" />
-                              </>
-                            )}
-                          </button>
-                        </div>
+                                {/* Stats */}
+                                <div className="bg-zinc-950/60 rounded-lg p-2 space-y-1">
+                                  {role !== 'bowler' && (
+                                    <>
+                                      <div className="flex justify-between text-[10px]">
+                                        <span className="text-zinc-400">Bat Avg:</span>
+                                        <strong className="text-zinc-200">{rp.player.batting_avg}</strong>
+                                      </div>
+                                      <div className="flex justify-between text-[10px]">
+                                        <span className="text-zinc-400">Strike Rate:</span>
+                                        <strong className="text-zinc-200">{rp.player.strike_rate}</strong>
+                                      </div>
+                                    </>
+                                  )}
+                                  {role !== 'batsman' && (
+                                    <>
+                                      <div className="flex justify-between text-[10px]">
+                                        <span className="text-zinc-400">Economy:</span>
+                                        <strong className="text-zinc-200">{rp.player.bowling_economy}</strong>
+                                      </div>
+                                      <div className="flex justify-between text-[10px]">
+                                        <span className="text-zinc-400">Bowling Avg:</span>
+                                        <strong className="text-zinc-200">{rp.player.bowling_avg}</strong>
+                                      </div>
+                                    </>
+                                  )}
+                                  <div className="flex justify-between text-[10px]">
+                                    <span className="text-zinc-400">Form:</span>
+                                    <strong className="text-zinc-200">{rp.current_form}</strong>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Draft Button */}
+                              <button
+                                onClick={() => handleDraftPlayer(rp.id)}
+                                disabled={!isMyTurn || draftingPlayerId !== null}
+                                className={`w-full mt-3 px-4 py-2.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 ${
+                                  isMyTurn
+                                    ? isDraftingThis
+                                      ? 'bg-zinc-850 text-emerald-400 border border-zinc-750'
+                                      : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black'
+                                    : 'bg-zinc-900 border border-zinc-850 text-zinc-650 cursor-not-allowed shadow-none'
+                                }`}
+                              >
+                                {isDraftingThis ? (
+                                  <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    Drafting...
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>Draft Player</span>
+                                    <ChevronRight className="w-3.5 h-3.5" />
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })
-                )}
-              </div>
+
+                      {/* Carousel scroll indicators */}
+                      <div className="flex gap-2 justify-center px-2">
+                        <button
+                          onClick={() => {
+                            if (playerCarouselRef.current) {
+                              playerCarouselRef.current.scrollBy({ left: -300, behavior: 'smooth' });
+                            }
+                          }}
+                          className="px-3 py-1 text-xs font-bold bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-zinc-300 transition-all"
+                        >
+                          ← Prev
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (playerCarouselRef.current) {
+                              playerCarouselRef.current.scrollBy({ left: 300, behavior: 'smooth' });
+                            }
+                          }}
+                          className="px-3 py-1 text-xs font-bold bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-zinc-300 transition-all"
+                        >
+                          Next →
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
             </div>
           </section>
 
-          {/* Column 4 (Right): Live Draft Feed & Roster tracker */}
-          <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-5 flex flex-col gap-4 overflow-hidden max-h-full">
+          {/* Column 4 (Right): Live Draft Feed & Roster tracker - Hidden on mobile */}
+          <section className="hidden lg:flex bg-zinc-900/40 border border-zinc-800 rounded-3xl p-4 md:p-5 flex-col gap-4 overflow-hidden max-h-full">
             {/* Feed Section */}
             <div className="flex-grow flex flex-col gap-3 overflow-hidden h-1/2">
               <h2 className="text-xs uppercase font-extrabold tracking-wider text-zinc-400 pb-2 border-b border-zinc-800 flex items-center gap-2 flex-shrink-0">

@@ -4,7 +4,7 @@ import logging
 import random
 import string
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Tuple
 
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -143,6 +143,147 @@ async def serialize_team(team: Team, session: AsyncSession) -> Dict[str, Any]:
         ]
     }
 
+TEAM_FULL_NAMES = {
+    "CSK": "Chennai Super Kings",
+    "MI": "Mumbai Indians",
+    "RCB": "Royal Challengers Bengaluru",
+    "KKR": "Kolkata Knight Riders",
+    "RR": "Rajasthan Royals",
+    "DC": "Delhi Capitals",
+    "SRH": "Sunrisers Hyderabad",
+    "LSG": "Lucknow Super Giants",
+    "GT": "Gujarat Titans",
+    "PBKS": "Punjab Kings"
+}
+
+def get_player_seasons(player_name: str) -> Dict[str, List[int]]:
+    real_careers = {
+        "Virat Kohli": {"RCB": list(range(2008, 2027))},
+        "Rohit Sharma": {"MI": list(range(2011, 2027)), "SRH": list(range(2008, 2011))},
+        "Shubman Gill": {"KKR": list(range(2018, 2022)), "GT": list(range(2022, 2027))},
+        "Suryakumar Yadav": {"MI": list(range(2012, 2014)) + list(range(2018, 2027)), "KKR": list(range(2014, 2018))},
+        "Yashasvi Jaiswal": {"RR": list(range(2020, 2027))},
+        "Ruturaj Gaikwad": {"CSK": list(range(2020, 2027))},
+        "Rinku Singh": {"KKR": list(range(2018, 2027))},
+        "Travis Head": {"RCB": list(range(2016, 2018)), "SRH": list(range(2024, 2027))},
+        "Faf du Plessis": {"CSK": list(range(2012, 2022)), "RCB": list(range(2022, 2027))},
+        "David Warner": {"DC": list(range(2009, 2014)) + list(range(2022, 2027)), "SRH": list(range(2014, 2022))},
+        "Kane Williamson": {"SRH": list(range(2015, 2023)), "GT": list(range(2023, 2027))},
+        "MS Dhoni": {"CSK": list(range(2008, 2016)) + list(range(2018, 2027))},
+        "Rishabh Pant": {"DC": list(range(2016, 2027))},
+        "Sanju Samson": {"RR": list(range(2013, 2016)) + list(range(2018, 2027)), "DC": list(range(2016, 2018))},
+        "Heinrich Klaasen": {"RCB": [2019], "RR": [2018], "SRH": list(range(2023, 2027))},
+        "Ishan Kishan": {"GL": list(range(2016, 2018)), "MI": list(range(2018, 2027))},
+        "Nicholas Pooran": {"PBKS": list(range(2019, 2022)), "SRH": [2022], "LSG": list(range(2023, 2027))},
+        "Quinton de Kock": {"SRH": [2013], "DC": list(range(2014, 2016)), "RCB": [2018], "MI": list(range(2019, 2022)), "LSG": list(range(2022, 2027))},
+        "KL Rahul": {"RCB": [2013, 2016], "SRH": list(range(2014, 2016)), "PBKS": list(range(2018, 2022)), "LSG": list(range(2022, 2027))},
+        "Hardik Pandya": {"MI": list(range(2015, 2022)) + list(range(2024, 2027)), "GT": list(range(2022, 2024))},
+        "Ravindra Jadeja": {"RR": list(range(2008, 2010)), "CSK": list(range(2012, 2016)) + list(range(2018, 2027))},
+        "Glenn Maxwell": {"MI": [2013], "PBKS": list(range(2014, 2018)) + [2020], "DC": list(range(2012, 2013)) + [2018], "RCB": list(range(2021, 2027))},
+        "Andre Russell": {"DC": list(range(2012, 2014)), "KKR": list(range(2014, 2027))},
+        "Jasprit Bumrah": {"MI": list(range(2013, 2027))},
+        "Rashid Khan": {"SRH": list(range(2017, 2022)), "GT": list(range(2022, 2027))},
+        "Yuzvendra Chahal": {"MI": [2011, 2012, 2013], "RCB": list(range(2014, 2022)), "RR": list(range(2022, 2027))},
+        "Mohammed Shami": {"KKR": list(range(2011, 2014)), "DC": list(range(2014, 2019)), "PBKS": list(range(2019, 2022)), "GT": list(range(2022, 2027))},
+        "Mitchell Starc": {"RCB": list(range(2014, 2016)), "KKR": list(range(2024, 2027))},
+        "Pat Cummins": {"KKR": [2014, 2015, 2020, 2021, 2022], "DC": [2017], "SRH": list(range(2024, 2027))},
+        "Kagiso Rabada": {"DC": list(range(2017, 2022)), "PBKS": list(range(2022, 2027))},
+        "Trent Boult": {"SRH": list(range(2015, 2017)), "KKR": [2017], "DC": list(range(2018, 2020)), "MI": list(range(2020, 2022)), "RR": list(range(2022, 2027))},
+        "Kuldeep Yadav": {"MI": [2012], "KKR": list(range(2014, 2022)), "DC": list(range(2022, 2027))},
+        "Axar Patel": {"MI": [2013], "PBKS": list(range(2014, 2019)), "DC": list(range(2019, 2027))},
+        "Mohammed Siraj": {"SRH": [2017], "RCB": list(range(2018, 2027))},
+        "Arshdeep Singh": {"PBKS": list(range(2019, 2027))},
+        "Bhuvneshwar Kumar": {"RCB": list(range(2009, 2011)), "SRH": list(range(2014, 2027))},
+        "Harshal Patel": {"RCB": list(range(2012, 2018)) + list(range(2021, 2024)), "DC": list(range(2018, 2021)), "PBKS": list(range(2024, 2027))},
+        "Varun Chakaravarthy": {"PBKS": [2019], "KKR": list(range(2020, 2027))},
+        "Piyush Chawla": {"PBKS": list(range(2008, 2014)), "KKR": list(range(2014, 2020)), "CSK": [2020], "MI": list(range(2021, 2027))},
+        "Dinesh Karthik": {"DC": list(range(2008, 2011)) + [2014], "PBKS": [2011], "MI": list(range(2012, 2014)), "RCB": [2015] + list(range(2022, 2027)), "KKR": list(range(2018, 2022))},
+        "Sunil Narine": {"KKR": list(range(2012, 2027))},
+        "Shikhar Dhawan": {"DC": [2008] + list(range(2019, 2022)), "MI": list(range(2009, 2011)), "SRH": list(range(2011, 2019)), "PBKS": list(range(2022, 2027))},
+        "Ajinkya Rahane": {"MI": list(range(2008, 2011)), "RR": list(range(2011, 2016)) + list(range(2018, 2020)), "DC": list(range(2020, 2022)), "KKR": [2022], "CSK": list(range(2023, 2027))},
+        "Ravichandran Ashwin": {"CSK": list(range(2008, 2016)), "PBKS": list(range(2018, 2020)), "DC": list(range(2020, 2022)), "RR": list(range(2022, 2027))},
+        "Ab de Villiers": {"DC": list(range(2008, 2011)), "RCB": list(range(2011, 2022))},
+        "Chris Gayle": {"KKR": list(range(2009, 2011)), "RCB": list(range(2011, 2018)), "PBKS": list(range(2018, 2022))},
+        "Lasith Malinga": {"MI": list(range(2009, 2021))},
+        "Shane Watson": {"RR": list(range(2008, 2016)), "RCB": list(range(2016, 2018)), "CSK": list(range(2018, 2021))},
+    }
+
+    if player_name in real_careers:
+        return real_careers[player_name]
+
+    import hashlib
+    h = int(hashlib.md5(player_name.encode('utf-8')).hexdigest(), 16)
+    
+    franchises = ["CSK", "MI", "RCB", "KKR", "RR", "DC", "SRH", "LSG", "GT", "PBKS"]
+    team1 = franchises[h % len(franchises)]
+    team2 = franchises[(h // 7) % len(franchises)]
+    
+    start_year = 2008 + (h % 17)
+    duration = 4 + ((h // 3) % 10)
+    end_year = min(2026, start_year + duration)
+    years = list(range(start_year, end_year + 1))
+    
+    if team1 == team2:
+        return {team1: years}
+    else:
+        split_idx = len(years) // 2
+        return {
+            team1: years[:split_idx],
+            team2: years[split_idx:]
+        }
+
+def get_pick_team_year(room_code: str, pick_number: int) -> Tuple[str, int]:
+    import hashlib
+    seed_str = f"{room_code}_pick_{pick_number}"
+    h = int(hashlib.md5(seed_str.encode('utf-8')).hexdigest(), 16)
+    
+    franchises = ["CSK", "MI", "RCB", "KKR", "RR", "DC", "SRH", "LSG", "GT", "PBKS"]
+    team = franchises[h % len(franchises)]
+    
+    if team in ["LSG", "GT"]:
+        year = 2022 + ((h // 13) % 5)
+    else:
+        year = 2008 + ((h // 13) % 19)
+        
+    return team, year
+
+def filter_players_by_team_year(unsold_players: List[RoomPlayer], team: str, year: int) -> List[RoomPlayer]:
+    matched = []
+    for rp in unsold_players:
+        seasons = get_player_seasons(rp.player.name)
+        if team in seasons and year in seasons[team]:
+            matched.append(rp)
+            
+    if matched:
+        return matched
+
+    # Fallback 1: Expand year range (+/- 2 years) for same team
+    for rp in unsold_players:
+        seasons = get_player_seasons(rp.player.name)
+        if team in seasons:
+            if any(abs(y - year) <= 2 for y in seasons[team]):
+                matched.append(rp)
+    if matched:
+        return matched
+
+    # Fallback 2: Any year for that team
+    for rp in unsold_players:
+        seasons = get_player_seasons(rp.player.name)
+        if team in seasons:
+            matched.append(rp)
+    if matched:
+        return matched
+
+    # Fallback 3: Any team for that year
+    for rp in unsold_players:
+        seasons = get_player_seasons(rp.player.name)
+        if any(year in seasons[t] for t in seasons):
+            matched.append(rp)
+    if matched:
+        return matched
+
+    return unsold_players
+
 async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[str, Any]:
     # Fetch room with teams
     res = await session.execute(
@@ -160,32 +301,24 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
         serialized_teams.append(await serialize_team(team, session))
 
     # Fetch active auction state
-    res = await session.execute(
+    res_auc = await session.execute(
         select(RoomAuctionState)
         .where(RoomAuctionState.room_id == room.id)
     )
-    auc_state = res.scalar_one_or_none()
+    auc_state = res_auc.scalar_one_or_none()
     
     serialized_auc = None
-    if auc_state and auc_state.current_player_id:
-        # Fetch current player details
-        res = await session.execute(
-            select(RoomPlayer)
-            .where(RoomPlayer.id == auc_state.current_player_id)
-            .options(selectinload(RoomPlayer.player))
-        )
-        rp = res.scalar_one_or_none()
-        if rp:
-            serialized_auc = {
-                "room_id": auc_state.room_id,
-                "current_player_id": auc_state.current_player_id,
-                "current_bid": auc_state.current_bid,
-                "current_bidder_id": auc_state.current_bidder_id,
-                "timer_ends_at": f"{auc_state.timer_ends_at.isoformat()}Z" if auc_state.timer_ends_at else None,
-                "rtm_active": auc_state.rtm_active,
-                "rtm_original_team_id": auc_state.rtm_original_team_id,
-                "rtm_timer_ends_at": f"{auc_state.rtm_timer_ends_at.isoformat()}Z" if auc_state.rtm_timer_ends_at else None,
-                "current_player": {
+    if auc_state:
+        serialized_player = None
+        if auc_state.current_player_id:
+            res = await session.execute(
+                select(RoomPlayer)
+                .where(RoomPlayer.id == auc_state.current_player_id)
+                .options(selectinload(RoomPlayer.player))
+            )
+            rp = res.scalar_one_or_none()
+            if rp:
+                serialized_player = {
                     "id": rp.id,
                     "player_id": rp.player_id,
                     "team_id": rp.team_id,
@@ -206,7 +339,18 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
                         "pitch_suitability": rp.player.pitch_suitability,
                     }
                 }
-            }
+        
+        serialized_auc = {
+            "room_id": auc_state.room_id,
+            "current_player_id": auc_state.current_player_id,
+            "current_bid": auc_state.current_bid,
+            "current_bidder_id": auc_state.current_bidder_id,
+            "timer_ends_at": f"{auc_state.timer_ends_at.isoformat()}Z" if auc_state.timer_ends_at else None,
+            "rtm_active": auc_state.rtm_active,
+            "rtm_original_team_id": auc_state.rtm_original_team_id,
+            "rtm_timer_ends_at": f"{auc_state.rtm_timer_ends_at.isoformat()}Z" if auc_state.rtm_timer_ends_at else None,
+            "current_player": serialized_player
+        }
 
     # Fetch unsold players
     res_unsold = await session.execute(
@@ -216,6 +360,18 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
         .options(selectinload(RoomPlayer.player))
     )
     unsold_players = res_unsold.scalars().all()
+    
+    # Calculate draft pick details and filter players
+    res_sold = await session.execute(
+        select(RoomPlayer)
+        .where(RoomPlayer.room_id == room.id)
+        .where(RoomPlayer.status == "SOLD")
+    )
+    sold_count = len(res_sold.scalars().all())
+    draft_team, draft_year = get_pick_team_year(room.code, sold_count + 1)
+    
+    pick_unsold_players = filter_players_by_team_year(unsold_players, draft_team, draft_year)
+    
     serialized_unsold = [
         {
             "id": rp.id,
@@ -240,7 +396,7 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
                 "base_price": rp.player.base_price,
                 "pitch_suitability": rp.player.pitch_suitability,
             }
-        } for rp in unsold_players
+        } for rp in pick_unsold_players
     ]
 
     return {
@@ -248,6 +404,9 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
         "room_status": room.status,
         "teams": serialized_teams,
         "unsold_players": serialized_unsold,
+        "draft_team_short": draft_team,
+        "draft_team_full": TEAM_FULL_NAMES.get(draft_team, draft_team),
+        "draft_year": draft_year,
         "auction_state": serialized_auc
     }
 
@@ -497,11 +656,15 @@ async def run_room_auction_ticker(room_code: str):
                     now = datetime.utcnow()
                     unsold_players = [p for p in room_players if p.status == "UNSOLD"]
                     
+                    # Filter draft pool by pick team and year
+                    draft_team, draft_year = get_pick_team_year(room_code, sold_count + 1)
+                    pick_unsold = filter_players_by_team_year(unsold_players, draft_team, draft_year)
+                    
                     if active_team.is_ai:
                         # Wait 2 seconds before making choice to look natural
                         time_elapsed = (datetime.utcnow() - (auc_state.timer_ends_at - timedelta(seconds=30))).total_seconds()
                         if time_elapsed >= 2.0:
-                            best_rp = await ai_draft_pick(unsold_players, active_team, session)
+                            best_rp = await ai_draft_pick(pick_unsold, active_team, session)
                             if best_rp:
                                 best_rp.status = "SOLD"
                                 best_rp.team_id = active_team.id
@@ -520,7 +683,7 @@ async def run_room_auction_ticker(room_code: str):
                     else:
                         # Human team turn. Auto-draft if they run out of time
                         if now >= auc_state.timer_ends_at:
-                            best_rp = await ai_draft_pick(unsold_players, active_team, session)
+                            best_rp = await ai_draft_pick(pick_unsold, active_team, session)
                             if best_rp:
                                 best_rp.status = "SOLD"
                                 best_rp.team_id = active_team.id
@@ -733,6 +896,25 @@ async def draft_player(code: str, req: DraftRequest, db: AsyncSession = Depends(
         
     if rp.status != "UNSOLD":
         raise HTTPException(status_code=400, detail="Player is already drafted or not available.")
+        
+    # Verify that the player is in the valid draft pool for this turn
+    res_all_rp = await db.execute(
+        select(RoomPlayer)
+        .where(RoomPlayer.room_id == room.id)
+        .options(selectinload(RoomPlayer.player))
+    )
+    room_players = res_all_rp.scalars().all()
+    
+    sold_players = [p for p in room_players if p.status == "SOLD"]
+    sold_count = len(sold_players)
+    
+    draft_team, draft_year = get_pick_team_year(room.code, sold_count + 1)
+    unsold_players = [p for p in room_players if p.status == "UNSOLD"]
+    pick_unsold_players = filter_players_by_team_year(unsold_players, draft_team, draft_year)
+    pick_unsold_ids = {p.id for p in pick_unsold_players}
+    
+    if req.player_id not in pick_unsold_ids:
+        raise HTTPException(status_code=400, detail="Selected player is not in the draft pool for this turn.")
         
     # Assign the player to the team
     rp.status = "SOLD"
