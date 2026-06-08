@@ -317,291 +317,291 @@ async def run_room_auction_ticker(room_code: str):
     try:
         while True:
             await asyncio.sleep(1) # tick every second
-            
-            async with AsyncSessionLocal() as session:
-                # 1. Fetch Room and Auction state
-                res_r = await session.execute(
-                    select(Room).where(Room.code == room_code)
-                )
-                room = res_r.scalar_one_or_none()
-                if not room or room.status != "AUCTION":
-                    logger.info(f"Stopping ticker for room {room_code}: Room state is {room.status if room else 'None'}")
-                    break
-                    
-                res_auc = await session.execute(
-                    select(RoomAuctionState)
-                    .where(RoomAuctionState.room_id == room.id)
-                )
-                auc_state = res_auc.scalar_one_or_none()
-                if not auc_state or not auc_state.current_player_id:
-                    # If room has no active player, pull next player!
-                    next_player = await start_next_player(room.id, session)
-                    if next_player:
-                        serialized_state = await serialize_room_state(room_code, session)
-                        await manager.broadcast(room_code, {
-                            "type": "NEW_PLAYER",
-                            "message": f"New player up for auction: {next_player.player.name}!",
-                            "state": serialized_state
-                        })
-                    else:
-                        # No players left! Finish auction
-                        room.status = "MANAGEMENT"
-                        # Create fixtures
-                        res_teams = await session.execute(
-                            select(Team).where(Team.room_id == room.id)
-                        )
-                        teams = res_teams.scalars().all()
-                        teams_dicts = [{"id": t.id, "name": t.name, "short_name": t.short_name, "home_ground": t.home_ground, "is_ai": t.is_ai} for t in teams]
-                        
-                        fixtures = generate_round_robin_fixtures(teams_dicts)
-                        for f in fixtures:
-                            match = Match(
-                                room_id=room.id,
-                                team1_id=f["team1_id"],
-                                team2_id=f["team2_id"],
-                                venue=f["venue"],
-                                stage=f["stage"],
-                                status="UPCOMING"
-                            )
-                            session.add(match)
-                        
-                        await session.commit()
-                        serialized_state = await serialize_room_state(room_code, session)
-                        await manager.broadcast(room_code, {
-                            "type": "AUCTION_FINISHED",
-                            "message": "The auction has successfully completed! Fixtures generated.",
-                            "state": serialized_state
-                        })
+            try:
+                async with AsyncSessionLocal() as session:
+                    # 1. Fetch Room and Auction state
+                    res_r = await session.execute(
+                        select(Room).where(Room.code == room_code)
+                    )
+                    room = res_r.scalar_one_or_none()
+                    if not room or room.status != "AUCTION":
+                        logger.info(f"Stopping ticker for room {room_code}: Room state is {room.status if room else 'None'}")
                         break
-                    continue
-                
-                # Check RTM state
-                now = datetime.utcnow()
-                
-                # RTM active and timer ended -> complete sale to high bidder (or original RTM team if matched)
-                if auc_state.rtm_active:
-                    if auc_state.rtm_timer_ends_at and now >= auc_state.rtm_timer_ends_at:
-                        # Human RTM timed out/declined! Sell to high bidder
-                        high_bidder_id = auc_state.current_bidder_id
-                        final_bid = auc_state.current_bid
                         
-                        # Find winning team
-                        res_win = await session.execute(select(Team).where(Team.id == high_bidder_id))
-                        winning_team = res_win.scalar_one()
-                        
-                        await finalize_sale(room.id, high_bidder_id, final_bid, session, rtm_used=False)
-                        
-                        # Set current player to None to trigger next pull on next tick
-                        auc_state.current_player_id = None
-                        await session.commit()
-                        
-                        serialized_state = await serialize_room_state(room_code, session)
-                        await manager.broadcast(room_code, {
-                            "type": "PLAYER_SOLD",
-                            "message": f"SOLD! Player went to {winning_team.name} for ₹{final_bid} Cr (RTM declined/timed out).",
-                            "state": serialized_state
-                        })
-                    continue
-
-                # Normal bidding timer ended
-                if auc_state.timer_ends_at and now >= auc_state.timer_ends_at:
-                    if auc_state.current_bidder_id is None:
-                        # Player UNSOLD
-                        await finalize_unsold(room.id, session)
-                        
-                        res_p = await session.execute(
-                            select(RoomPlayer).where(RoomPlayer.id == auc_state.current_player_id).options(selectinload(RoomPlayer.player))
-                        )
-                        rp = res_p.scalar_one()
-                        
-                        auc_state.current_player_id = None
-                        await session.commit()
-                        
-                        serialized_state = await serialize_room_state(room_code, session)
-                        await manager.broadcast(room_code, {
-                            "type": "PLAYER_UNSOLD",
-                            "message": f"UNSOLD! {rp.player.name} went unsold.",
-                            "state": serialized_state
-                        })
-                    else:
-                        # Bidding ended, check for RTM eligibility
-                        # Load teams for engine
-                        res_teams = await session.execute(
-                            select(Team).where(Team.room_id == room.id)
-                        )
-                        teams = res_teams.scalars().all()
-                        
-                        # Fetch squad player counts
-                        teams_dicts = []
-                        for t in teams:
-                            t_serialized = await serialize_team(t, session)
-                            teams_dicts.append(t_serialized)
-                            
-                        # Fetch player details
-                        res_rp = await session.execute(
-                            select(RoomPlayer).where(RoomPlayer.id == auc_state.current_player_id).options(selectinload(RoomPlayer.player))
-                        )
-                        rp = res_rp.scalar_one()
-                        player_dict = {
-                            "id": rp.id,
-                            "name": rp.player.name,
-                            "role": rp.player.role,
-                            "nationality": rp.player.nationality,
-                            "batting_avg": rp.player.batting_avg,
-                            "strike_rate": rp.player.strike_rate,
-                            "bowling_economy": rp.player.bowling_economy,
-                            "bowling_avg": rp.player.bowling_avg,
-                            "base_price": rp.player.base_price,
-                            "pitch_suitability": rp.player.pitch_suitability
-                        }
-                        
-                        auc_mgr = AuctionManager({
-                            "room_id": room.id,
-                            "teams": teams_dicts,
-                            "current_auction": {
-                                "current_player": player_dict,
-                                "current_bid": auc_state.current_bid,
-                                "current_bidder_id": auc_state.current_bidder_id,
-                                "rtm_active": False
-                            }
-                        })
-                        
-                        rtm_eligible, original_team_id = auc_mgr.check_rtm_eligibility()
-                        if rtm_eligible:
-                            # Trigger RTM phase
-                            auc_state.rtm_active = True
-                            auc_state.rtm_original_team_id = original_team_id
-                            auc_state.rtm_timer_ends_at = datetime.utcnow() + timedelta(seconds=10)
-                            await session.commit()
-                            
-                            # Fetch original team
-                            res_orig = await session.execute(select(Team).where(Team.id == original_team_id))
-                            orig_team = res_orig.scalar_one()
-                            
+                    res_auc = await session.execute(
+                        select(RoomAuctionState)
+                        .where(RoomAuctionState.room_id == room.id)
+                    )
+                    auc_state = res_auc.scalar_one_or_none()
+                    if not auc_state or not auc_state.current_player_id:
+                        # If room has no active player, pull next player!
+                        next_player = await start_next_player(room.id, session)
+                        if next_player:
                             serialized_state = await serialize_room_state(room_code, session)
                             await manager.broadcast(room_code, {
-                                "type": "RTM_WINDOW_ACTIVE",
-                                "message": f"RTM WINDOW ACTIVE! Can {orig_team.name} match the ₹{auc_state.current_bid} Cr bid for {rp.player.name}?",
-                                "rtm_team_id": original_team_id,
+                                "type": "NEW_PLAYER",
+                                "message": f"New player up for auction: {next_player.player.name}!",
                                 "state": serialized_state
                             })
-                            
-                            # If RTM team is AI, evaluate immediately
-                            if orig_team.is_ai:
-                                # Run AI RTM evaluator
-                                rtm_exercised, rtm_msg = auc_mgr.process_ai_rtm()
-                                await asyncio.sleep(2.0) # short dramatic delay
-                                
-                                if rtm_exercised:
-                                    # Sell to original team
-                                    await finalize_sale(room.id, original_team_id, auc_state.current_bid, session, rtm_used=True)
-                                    auc_state.current_player_id = None
-                                    await session.commit()
-                                    
-                                    serialized_state = await serialize_room_state(room_code, session)
-                                    await manager.broadcast(room_code, {
-                                        "type": "PLAYER_SOLD",
-                                        "message": f"SOLD! {orig_team.name} matched the bid using RTM! {rp.player.name} acquired for ₹{auc_state.current_bid} Cr.",
-                                        "state": serialized_state
-                                    })
-                                else:
-                                    # Decline RTM, sell to high bidder
-                                    res_win = await session.execute(select(Team).where(Team.id == auc_state.current_bidder_id))
-                                    winning_team = res_win.scalar_one()
-                                    
-                                    await finalize_sale(room.id, auc_state.current_bidder_id, auc_state.current_bid, session, rtm_used=False)
-                                    auc_state.current_player_id = None
-                                    await session.commit()
-                                    
-                                    serialized_state = await serialize_room_state(room_code, session)
-                                    await manager.broadcast(room_code, {
-                                        "type": "PLAYER_SOLD",
-                                        "message": f"SOLD! {winning_team.name} acquired {rp.player.name} for ₹{auc_state.current_bid} Cr (AI declined RTM).",
-                                        "state": serialized_state
-                                    })
                         else:
-                            # Not eligible for RTM, sell to high bidder
-                            res_win = await session.execute(select(Team).where(Team.id == auc_state.current_bidder_id))
+                            # No players left! Finish auction
+                            room.status = "MANAGEMENT"
+                            # Create fixtures
+                            res_teams = await session.execute(
+                                select(Team).where(Team.room_id == room.id)
+                            )
+                            teams = res_teams.scalars().all()
+                            teams_dicts = [{"id": t.id, "name": t.name, "short_name": t.short_name, "home_ground": t.home_ground, "is_ai": t.is_ai} for t in teams]
+                            
+                            fixtures = generate_round_robin_fixtures(teams_dicts)
+                            for f in fixtures:
+                                match = Match(
+                                    room_id=room.id,
+                                    team1_id=f["team1_id"],
+                                    team2_id=f["team2_id"],
+                                    venue=f["venue"],
+                                    stage=f["stage"],
+                                    status="UPCOMING"
+                                )
+                                session.add(match)
+                            
+                            await session.commit()
+                            serialized_state = await serialize_room_state(room_code, session)
+                            await manager.broadcast(room_code, {
+                                "type": "AUCTION_FINISHED",
+                                "message": "The auction has successfully completed! Fixtures generated.",
+                                "state": serialized_state
+                            })
+                            break
+                        continue
+                    
+                    # Check RTM state
+                    now = datetime.utcnow()
+                    
+                    # RTM active and timer ended -> complete sale to high bidder (or original RTM team if matched)
+                    if auc_state.rtm_active:
+                        if auc_state.rtm_timer_ends_at and now >= auc_state.rtm_timer_ends_at:
+                            # Human RTM timed out/declined! Sell to high bidder
+                            high_bidder_id = auc_state.current_bidder_id
+                            final_bid = auc_state.current_bid
+                            
+                            # Find winning team
+                            res_win = await session.execute(select(Team).where(Team.id == high_bidder_id))
                             winning_team = res_win.scalar_one()
                             
-                            await finalize_sale(room.id, auc_state.current_bidder_id, auc_state.current_bid, session, rtm_used=False)
+                            await finalize_sale(room.id, high_bidder_id, final_bid, session, rtm_used=False)
+                            
+                            # Set current player to None to trigger next pull on next tick
                             auc_state.current_player_id = None
                             await session.commit()
                             
                             serialized_state = await serialize_room_state(room_code, session)
                             await manager.broadcast(room_code, {
                                 "type": "PLAYER_SOLD",
-                                "message": f"SOLD! {winning_team.name} acquired {rp.player.name} for ₹{auc_state.current_bid} Cr.",
+                                "message": f"SOLD! Player went to {winning_team.name} for ₹{final_bid} Cr (RTM declined/timed out).",
                                 "state": serialized_state
                             })
-                    continue
-                
-                # Check for AI bids (if timer has not run out and RTM is not active)
-                # Load teams and current player to run AuctionManager evaluation
-                res_teams = await session.execute(
-                    select(Team).where(Team.room_id == room.id)
-                )
-                teams = res_teams.scalars().all()
-                
-                # Fetch squad player counts for each team
-                teams_dicts = []
-                for t in teams:
-                    t_serialized = await serialize_team(t, session)
-                    teams_dicts.append(t_serialized)
+                        continue
+
+                    # Normal bidding timer ended
+                    if auc_state.timer_ends_at and now >= auc_state.timer_ends_at:
+                        if auc_state.current_bidder_id is None:
+                            # Player UNSOLD
+                            await finalize_unsold(room.id, session)
+                            
+                            res_p = await session.execute(
+                                select(RoomPlayer).where(RoomPlayer.id == auc_state.current_player_id).options(selectinload(RoomPlayer.player))
+                            )
+                            rp = res_p.scalar_one()
+                            
+                            auc_state.current_player_id = None
+                            await session.commit()
+                            
+                            serialized_state = await serialize_room_state(room_code, session)
+                            await manager.broadcast(room_code, {
+                                "type": "PLAYER_UNSOLD",
+                                "message": f"UNSOLD! {rp.player.name} went unsold.",
+                                "state": serialized_state
+                            })
+                        else:
+                            # Bidding ended, check for RTM eligibility
+                            # Load teams for engine
+                            res_teams = await session.execute(
+                                select(Team).where(Team.room_id == room.id)
+                            )
+                            teams = res_teams.scalars().all()
+                            
+                            # Fetch squad player counts
+                            teams_dicts = []
+                            for t in teams:
+                                t_serialized = await serialize_team(t, session)
+                                teams_dicts.append(t_serialized)
+                                
+                            # Fetch player details
+                            res_rp = await session.execute(
+                                select(RoomPlayer).where(RoomPlayer.id == auc_state.current_player_id).options(selectinload(RoomPlayer.player))
+                            )
+                            rp = res_rp.scalar_one()
+                            player_dict = {
+                                "id": rp.id,
+                                "name": rp.player.name,
+                                "role": rp.player.role,
+                                "nationality": rp.player.nationality,
+                                "batting_avg": rp.player.batting_avg,
+                                "strike_rate": rp.player.strike_rate,
+                                "bowling_economy": rp.player.bowling_economy,
+                                "bowling_avg": rp.player.bowling_avg,
+                                "base_price": rp.player.base_price,
+                                "pitch_suitability": rp.player.pitch_suitability
+                            }
+                            
+                            auc_mgr = AuctionManager({
+                                "room_id": room.id,
+                                "teams": teams_dicts,
+                                "current_auction": {
+                                    "current_player": player_dict,
+                                    "current_bid": auc_state.current_bid,
+                                    "current_bidder_id": auc_state.current_bidder_id,
+                                    "rtm_active": False
+                                }
+                            })
+                            
+                            rtm_eligible, original_team_id = auc_mgr.check_rtm_eligibility()
+                            if rtm_eligible:
+                                # Trigger RTM phase
+                                auc_state.rtm_active = True
+                                auc_state.rtm_original_team_id = original_team_id
+                                auc_state.rtm_timer_ends_at = datetime.utcnow() + timedelta(seconds=10)
+                                await session.commit()
+                                
+                                # Fetch original team
+                                res_orig = await session.execute(select(Team).where(Team.id == original_team_id))
+                                orig_team = res_orig.scalar_one()
+                                
+                                serialized_state = await serialize_room_state(room_code, session)
+                                await manager.broadcast(room_code, {
+                                    "type": "RTM_WINDOW_ACTIVE",
+                                    "message": f"RTM WINDOW ACTIVE! Can {orig_team.name} match the ₹{auc_state.current_bid} Cr bid for {rp.player.name}?",
+                                    "rtm_team_id": original_team_id,
+                                    "state": serialized_state
+                                })
+                                
+                                # If RTM team is AI, evaluate immediately
+                                if orig_team.is_ai:
+                                    # Run AI RTM evaluator
+                                    rtm_exercised, rtm_msg = auc_mgr.process_ai_rtm()
+                                    await asyncio.sleep(2.0) # short dramatic delay
+                                    
+                                    if rtm_exercised:
+                                        # Sell to original team
+                                        await finalize_sale(room.id, original_team_id, auc_state.current_bid, session, rtm_used=True)
+                                        auc_state.current_player_id = None
+                                        await session.commit()
+                                        
+                                        serialized_state = await serialize_room_state(room_code, session)
+                                        await manager.broadcast(room_code, {
+                                            "type": "PLAYER_SOLD",
+                                            "message": f"SOLD! {orig_team.name} matched the bid using RTM! {rp.player.name} acquired for ₹{auc_state.current_bid} Cr.",
+                                            "state": serialized_state
+                                        })
+                                    else:
+                                        # Decline RTM, sell to high bidder
+                                        res_win = await session.execute(select(Team).where(Team.id == auc_state.current_bidder_id))
+                                        winning_team = res_win.scalar_one()
+                                        
+                                        await finalize_sale(room.id, auc_state.current_bidder_id, auc_state.current_bid, session, rtm_used=False)
+                                        auc_state.current_player_id = None
+                                        await session.commit()
+                                        
+                                        serialized_state = await serialize_room_state(room_code, session)
+                                        await manager.broadcast(room_code, {
+                                            "type": "PLAYER_SOLD",
+                                            "message": f"SOLD! {winning_team.name} acquired {rp.player.name} for ₹{auc_state.current_bid} Cr (AI declined RTM).",
+                                            "state": serialized_state
+                                        })
+                            else:
+                                # Not eligible for RTM, sell to high bidder
+                                res_win = await session.execute(select(Team).where(Team.id == auc_state.current_bidder_id))
+                                winning_team = res_win.scalar_one()
+                                
+                                await finalize_sale(room.id, auc_state.current_bidder_id, auc_state.current_bid, session, rtm_used=False)
+                                auc_state.current_player_id = None
+                                await session.commit()
+                                
+                                serialized_state = await serialize_room_state(room_code, session)
+                                await manager.broadcast(room_code, {
+                                    "type": "PLAYER_SOLD",
+                                    "message": f"SOLD! {winning_team.name} acquired {rp.player.name} for ₹{auc_state.current_bid} Cr.",
+                                    "state": serialized_state
+                                })
+                        continue
                     
-                res_rp = await session.execute(
-                    select(RoomPlayer).where(RoomPlayer.id == auc_state.current_player_id).options(selectinload(RoomPlayer.player))
-                )
-                rp = res_rp.scalar_one()
-                player_dict = {
-                    "id": rp.id,
-                    "name": rp.player.name,
-                    "role": rp.player.role,
-                    "nationality": rp.player.nationality,
-                    "batting_avg": rp.player.batting_avg,
-                    "strike_rate": rp.player.strike_rate,
-                    "bowling_economy": rp.player.bowling_economy,
-                    "bowling_avg": rp.player.bowling_avg,
-                    "base_price": rp.player.base_price,
-                    "pitch_suitability": rp.player.pitch_suitability
-                }
-                
-                auc_mgr = AuctionManager({
-                    "room_id": room.id,
-                    "teams": teams_dicts,
-                    "current_auction": {
-                        "current_player": player_dict,
-                        "current_bid": auc_state.current_bid,
-                        "current_bidder_id": auc_state.current_bidder_id,
-                        "rtm_active": False
+                    # Check for AI bids (if timer has not run out and RTM is not active)
+                    # Load teams and current player to run AuctionManager evaluation
+                    res_teams = await session.execute(
+                        select(Team).where(Team.room_id == room.id)
+                    )
+                    teams = res_teams.scalars().all()
+                    
+                    # Fetch squad player counts for each team
+                    teams_dicts = []
+                    for t in teams:
+                        t_serialized = await serialize_team(t, session)
+                        teams_dicts.append(t_serialized)
+                        
+                    res_rp = await session.execute(
+                        select(RoomPlayer).where(RoomPlayer.id == auc_state.current_player_id).options(selectinload(RoomPlayer.player))
+                    )
+                    rp = res_rp.scalar_one()
+                    player_dict = {
+                        "id": rp.id,
+                        "name": rp.player.name,
+                        "role": rp.player.role,
+                        "nationality": rp.player.nationality,
+                        "batting_avg": rp.player.batting_avg,
+                        "strike_rate": rp.player.strike_rate,
+                        "bowling_economy": rp.player.bowling_economy,
+                        "bowling_avg": rp.player.bowling_avg,
+                        "base_price": rp.player.base_price,
+                        "pitch_suitability": rp.player.pitch_suitability
                     }
-                })
-                
-                # Run AI bid check (only occasional, say 40% chance per tick to look human-like)
-                if random.random() < 0.45:
-                    ai_bid = auc_mgr.process_ai_bids()
-                    if ai_bid:
-                        ai_team_id, bid_amount = ai_bid
-                        
-                        # Apply bid in database
-                        auc_state.current_bid = bid_amount
-                        auc_state.current_bidder_id = ai_team_id
-                        auc_state.timer_ends_at = datetime.utcnow() + timedelta(seconds=15)
-                        await session.commit()
-                        
-                        res_t = await session.execute(select(Team).where(Team.id == ai_team_id))
-                        ai_team = res_t.scalar_one()
-                        
-                        serialized_state = await serialize_room_state(room_code, session)
-                        await manager.broadcast(room_code, {
-                            "type": "NEW_BID",
-                            "message": f"Bid placed by {ai_team.name}: ₹{bid_amount} Cr",
-                            "state": serialized_state
-                        })
+                    
+                    auc_mgr = AuctionManager({
+                        "room_id": room.id,
+                        "teams": teams_dicts,
+                        "current_auction": {
+                            "current_player": player_dict,
+                            "current_bid": auc_state.current_bid,
+                            "current_bidder_id": auc_state.current_bidder_id,
+                            "rtm_active": False
+                        }
+                    })
+                    
+                    # Run AI bid check (only occasional, say 40% chance per tick to look human-like)
+                    if random.random() < 0.45:
+                        ai_bid = auc_mgr.process_ai_bids()
+                        if ai_bid:
+                            ai_team_id, bid_amount = ai_bid
+                            
+                            # Apply bid in database
+                            auc_state.current_bid = bid_amount
+                            auc_state.current_bidder_id = ai_team_id
+                            auc_state.timer_ends_at = datetime.utcnow() + timedelta(seconds=15)
+                            await session.commit()
+                            
+                            res_t = await session.execute(select(Team).where(Team.id == ai_team_id))
+                            ai_team = res_t.scalar_one()
+                            
+                            serialized_state = await serialize_room_state(room_code, session)
+                            await manager.broadcast(room_code, {
+                                "type": "NEW_BID",
+                                "message": f"Bid placed by {ai_team.name}: ₹{bid_amount} Cr",
+                                "state": serialized_state
+                            })
+            except Exception as e:
+                logger.error(f"Error in auction ticker tick for room {room_code}: {e}", exc_info=True)
     except asyncio.CancelledError:
         logger.info(f"Auction ticker for room {room_code} cancelled.")
-    except Exception as e:
-        logger.error(f"Error in auction ticker loop: {e}", exc_info=True)
 
 # --- REST ENDPOINTS ---
 

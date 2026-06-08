@@ -65,6 +65,9 @@ def evaluate_player_valuation(player: Dict[str, Any], team: Dict[str, Any]) -> f
         "wicketkeeper": 2
     }
     
+    if not role or role not in targets:
+        return 0.0
+
     deficit = targets[role] - role_counts[role]
     need_multiplier = 1.0
     if deficit > 0:
