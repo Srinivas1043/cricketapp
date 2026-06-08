@@ -99,24 +99,38 @@ export default function GamePage() {
   useEffect(() => {
     if (!roomCode || !assignedTeamId) return;
 
+    let active = true;
+
     const connectWS = () => {
+      if (!active) return;
       const url = `${WS_BASE_URL}/ws/room/${roomCode}?player_id=${assignedTeamId}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!active) {
+          ws.close();
+          return;
+        }
         logger("WebSocket connected.");
         setError('');
       };
 
       ws.onmessage = (event) => {
+        if (!active) return;
         const msg = JSON.parse(event.data);
         handleWSMessage(msg);
       };
 
       ws.onclose = () => {
+        if (!active) {
+          logger("WebSocket closed intentionally or room changed. Not reconnecting.");
+          return;
+        }
         logger("WebSocket disconnected. Reconnecting...");
-        setTimeout(() => connectWS(), 3000);
+        setTimeout(() => {
+          if (active) connectWS();
+        }, 3000);
       };
 
       ws.onerror = (err) => {
@@ -127,7 +141,11 @@ export default function GamePage() {
     connectWS();
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      active = false;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [roomCode, assignedTeamId]);
 
