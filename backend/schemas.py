@@ -135,3 +135,8 @@ class RoomResponse(BaseModel):
 class BidRequest(BaseModel):
     team_id: str
     amount: float
+
+# --- DRAFT REQUEST ---
+class DraftRequest(BaseModel):
+    team_id: str
+    player_id: str

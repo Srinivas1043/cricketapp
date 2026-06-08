@@ -47,6 +47,12 @@ export default function GamePage() {
   const [standingsFilter, setStandingsFilter] = useState<'all' | 'friends' | 'ai'>('all');
   const [excludeAi, setExcludeAi] = useState(false);
 
+  // Snake draft filters & UI state
+  const [draftSearchQuery, setDraftSearchQuery] = useState('');
+  const [draftRoleTab, setDraftRoleTab] = useState<'all' | 'batsman' | 'wicketkeeper' | 'allrounder' | 'bowler'>('all');
+  const [draftNationalityFilter, setDraftNationalityFilter] = useState<'all' | 'Indian' | 'Overseas'>('all');
+  const [draftingPlayerId, setDraftingPlayerId] = useState<string | null>(null);
+
   // Match center state
   const [activeMatch, setActiveMatch] = useState<Match | null>(null);
   const [matchScorecard, setMatchScorecard] = useState<any>(null);
@@ -174,6 +180,8 @@ export default function GamePage() {
       case 'PLAYER_UNSOLD':
       case 'RTM_WINDOW_ACTIVE':
       case 'NEW_BID':
+      case 'DRAFT_TURN_STARTED':
+      case 'PLAYER_DRAFTED':
         if (msg.message) {
           setBidLog((prev) => [msg.message, ...prev.slice(0, 19)]);
         }
@@ -346,6 +354,18 @@ export default function GamePage() {
       await api.exerciseRtm(assignedTeamId, action);
     } catch (err: any) {
       alert(err.message);
+    }
+  };
+
+  const handleDraftPlayer = async (playerId: string) => {
+    if (!roomCode || !assignedTeamId) return;
+    setDraftingPlayerId(playerId);
+    try {
+      await api.draftPlayer(roomCode, assignedTeamId, playerId);
+    } catch (err: any) {
+      alert(err.message || "Failed to draft player.");
+    } finally {
+      setDraftingPlayerId(null);
     }
   };
 
@@ -830,36 +850,88 @@ export default function GamePage() {
     );
   }
 
-  // AUCTION ARENA SCREEN
+  // AURAFT ARENA SCREEN
   if (roomState.room_status === 'AUCTION') {
-    const curPlayer = roomState.auction_state?.current_player;
-    const curBid = roomState.auction_state?.current_bid;
-    const curBidderId = roomState.auction_state?.current_bidder_id;
-    const rtmActive = roomState.auction_state?.rtm_active;
-    const rtmTeamId = roomState.auction_state?.rtm_original_team_id;
-
-    // Find bidder details
-    const currentBidder = roomState.teams.find(t => t.id === curBidderId);
-    // Find RTM team details
-    const rtmTeam = roomState.teams.find(t => t.id === rtmTeamId);
-
-    const isMyRtm = rtmActive && rtmTeamId === assignedTeamId;
-
-    const team = roomState.teams.find(t => t.id === assignedTeamId);
+    const myTeam = roomState.teams.find(t => t.id === assignedTeamId);
     
-    // Bid increment helpers
-    const basePrice = curPlayer?.player.base_price || 0;
-    const nextBidAmount = (curBid === null || curBid === undefined) 
-      ? basePrice 
-      : round(curBid + getBidIncrement(curBid), 2);
+    // Roster count details for the logged-in user
+    const userBatsmen = myTeam?.players?.filter(p => p.player.role.toLowerCase() === 'batsman') || [];
+    const userKeepers = myTeam?.players?.filter(p => p.player.role.toLowerCase() === 'wicketkeeper') || [];
+    const userAllrounders = myTeam?.players?.filter(p => p.player.role.toLowerCase() === 'allrounder') || [];
+    const userBowlers = myTeam?.players?.filter(p => p.player.role.toLowerCase() === 'bowler') || [];
+    
+    // Total sold count
+    const soldPlayers = roomState.teams.flatMap((t) => t.players || []);
+    const sold_count = soldPlayers.length;
+    
+    // Sort teams by id to match the backend index determination
+    const sortedTeams = [...roomState.teams].sort((a, b) => a.id.localeCompare(b.id));
+    const T = sortedTeams.length;
+    
+    // Dynamic rounds and picks
+    const max_squad_size = Math.min(15, Math.floor((sold_count + (roomState.unsold_players?.length || 0)) / T));
+    const round_num = Math.floor(sold_count / T) + 1;
+    const pick_in_round = sold_count % T;
+    
+    // Active team on clock
+    let activeTeam: Team;
+    if (round_num % 2 === 1) {
+      activeTeam = sortedTeams[pick_in_round];
+    } else {
+      activeTeam = sortedTeams[T - 1 - pick_in_round];
+    }
+    
+    const isMyTurn = activeTeam?.id === assignedTeamId;
+    
+    // Snake draft queue visualization (next 5 picks)
+    const nextPicks: { team: Team; round: number; pickIndex: number }[] = [];
+    for (let i = 0; i < 5; i++) {
+      const idx = sold_count + i;
+      const r = Math.floor(idx / T) + 1;
+      const p = idx % T;
+      let teamAtIdx: Team;
+      if (r % 2 === 1) {
+        teamAtIdx = sortedTeams[p];
+      } else {
+        teamAtIdx = sortedTeams[T - 1 - p];
+      }
+      if (teamAtIdx) {
+        nextPicks.push({ team: teamAtIdx, round: r, pickIndex: p + 1 });
+      }
+    }
+
+    // Filter and search available players
+    const filteredUnsold = (roomState.unsold_players || []).filter((rp) => {
+      // 1. Search Query
+      if (draftSearchQuery.trim() !== '') {
+        const query = draftSearchQuery.toLowerCase();
+        if (!rp.player.name.toLowerCase().includes(query)) return false;
+      }
+      // 2. Role Tab
+      if (draftRoleTab !== 'all') {
+        if (rp.player.role.toLowerCase() !== draftRoleTab) return false;
+      }
+      // 3. Nationality Filter
+      if (draftNationalityFilter !== 'all') {
+        if (rp.player.nationality !== draftNationalityFilter) return false;
+      }
+      return true;
+    });
+
+    const sortedFilteredUnsold = [...filteredUnsold].sort((a, b) => {
+      if (b.player.base_price !== a.player.base_price) {
+        return b.player.base_price - a.player.base_price;
+      }
+      return a.player.name.localeCompare(b.player.name);
+    });
 
     return (
-      <main className="min-h-screen bg-[#090b0d] text-[#f8fafc] flex flex-col">
-        {/* Top bar */}
-        <header className="bg-zinc-950 border-b border-zinc-800 py-4 px-6 flex items-center justify-between sticky top-0 z-50">
+      <main className="min-h-screen bg-[#090b0d] text-[#f8fafc] flex flex-col animate-in fade-in duration-300">
+        {/* Top Header */}
+        <header className="bg-zinc-950 border-b border-zinc-800 py-4 px-6 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-50 shadow-md">
           <div className="flex items-center gap-4">
             <span className="text-sm font-black tracking-tight bg-gradient-to-r from-emerald-400 to-amber-300 bg-clip-text text-transparent">
-              IPL AUCTION ARENA
+              IPL SNAKE DRAFT ARENA
             </span>
             <div className="text-zinc-600 text-xs">|</div>
             <span className="text-xs font-bold text-zinc-400">Room Code: {roomCode}</span>
@@ -873,31 +945,28 @@ export default function GamePage() {
 
           <div className="flex items-center gap-6">
             <div className="text-right">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">Your Budget Left</span>
-              <span className="text-base font-extrabold text-emerald-400">₹{team?.budget_remaining} Crore</span>
+              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">Your Squad Count</span>
+              <span className="text-sm font-extrabold text-zinc-200">{myTeam?.players?.length || 0} / {max_squad_size || 15} Players</span>
             </div>
-            <div className="text-right">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">RTM Cards Left</span>
-              <span className="text-base font-extrabold text-amber-400">{team?.rtm_cards_remaining}</span>
-            </div>
-            <div className="text-right">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">Squad Count</span>
-              <span className="text-base font-extrabold text-zinc-300">{team?.players?.length}/15</span>
+            <div className="text-right border-l border-zinc-800 pl-4">
+              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider block">Roster Composition</span>
+              <span className="text-xs font-semibold text-emerald-400">
+                🏏 {userBatsmen.length}/5 | 🧤 {userKeepers.length}/2 | ⚡ {userAllrounders.length}/3 | ⚾ {userBowlers.length}/5
+              </span>
             </div>
           </div>
         </header>
 
-        {/* Main Grid */}
-        <div className="flex-grow grid grid-cols-1 lg:grid-cols-4 gap-6 p-6 overflow-hidden">
+        {/* Main Workspace Layout */}
+        <div className="flex-grow grid grid-cols-1 lg:grid-cols-4 gap-6 p-6 overflow-hidden max-h-[calc(100vh-80px)]">
           
-          {/* Column 1: Budgets of all teams */}
-          <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
+          {/* Column 1 (Left): Franchises Status list */}
+          <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-5 flex flex-col gap-4 overflow-y-auto max-h-full">
             <div className="space-y-3 pb-2 border-b border-zinc-800">
               <h2 className="text-xs uppercase font-extrabold tracking-wider text-zinc-400 flex items-center gap-2">
-                <DollarSign className="w-4 h-4 text-emerald-500" /> Franchise Budgets
+                <Users className="w-4 h-4 text-emerald-500" /> Draft Franchises
               </h2>
               
-              {/* Filter toggle bar */}
               <div className="flex items-center gap-1 bg-zinc-950 p-1 border border-zinc-900 rounded-xl">
                 {(['all', 'friends', 'ai'] as const).map((filterOpt) => (
                   <button
@@ -915,324 +984,348 @@ export default function GamePage() {
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2 flex-grow overflow-y-auto pr-1">
               {roomState.teams
                 .filter((t) => {
                   if (auctionFilter === 'friends') return !t.is_ai;
                   if (auctionFilter === 'ai') return t.is_ai;
                   return true;
                 })
-                .map((t) => (
-                  <div 
-                    key={t.id}
-                    onClick={() => setSquadModalTeamId(t.id)}
-                    className={`p-3 rounded-xl border flex items-center justify-between text-xs cursor-pointer transition-all group ${
-                      t.id === assignedTeamId 
-                        ? 'bg-emerald-950/20 border-emerald-500/30 hover:border-emerald-500/50 hover:bg-emerald-950/30' 
-                        : 'bg-zinc-950/60 border-zinc-900 hover:bg-zinc-900/60 hover:border-zinc-800'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-extrabold text-zinc-200 flex items-center gap-1.5">
-                        <span>{t.name}</span>
-                        {t.id === assignedTeamId && (
-                          <span className="bg-emerald-500 text-zinc-950 text-[9px] font-black px-1 rounded uppercase">You</span>
+                .map((t) => {
+                  const isTeamClock = activeTeam?.id === t.id;
+                  return (
+                    <div 
+                      key={t.id}
+                      onClick={() => setSquadModalTeamId(t.id)}
+                      className={`p-3 rounded-xl border flex items-center justify-between text-xs cursor-pointer transition-all group ${
+                        isTeamClock 
+                          ? 'bg-emerald-950/30 border-emerald-500 hover:bg-emerald-950/40 shadow-lg shadow-emerald-950/10'
+                          : t.id === assignedTeamId
+                          ? 'bg-zinc-900/50 border-zinc-850 hover:bg-zinc-900/70 hover:border-zinc-800'
+                          : 'bg-zinc-950/60 border-zinc-900 hover:bg-zinc-900/60 hover:border-zinc-800'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="font-extrabold text-zinc-200 flex items-center gap-1.5">
+                          <span>{t.name}</span>
+                          {t.id === assignedTeamId && (
+                            <span className="bg-emerald-500 text-zinc-950 text-[9px] font-black px-1 rounded uppercase font-sans">YOU</span>
+                          )}
+                        </div>
+                        <span className="text-[10px] font-bold text-zinc-500 block">
+                          Drafted: {t.players?.length || 0} / {max_squad_size || 15}
+                        </span>
+                        
+                        {isTeamClock ? (
+                          <span className="inline-flex items-center gap-1 text-[9px] font-extrabold uppercase text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-900">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                            ON THE CLOCK
+                          </span>
+                        ) : (
+                          <span className="text-zinc-650 group-hover:text-emerald-400 transition-colors inline-flex items-center gap-0.5 text-[10px]">
+                            <Eye className="w-3 h-3" /> View Squad
+                          </span>
                         )}
                       </div>
-                      <span className="text-[10px] font-bold text-zinc-500 mt-0.5 flex items-center gap-1.5">
-                        Squad: {t.players?.length}/15 • RTM: {t.rtm_cards_remaining}
-                        <span className="text-zinc-650 group-hover:text-emerald-400 transition-colors flex items-center gap-0.5 ml-1">
-                          <Eye className="w-3 h-3" /> Squad
-                        </span>
-                      </span>
+                      
+                      <div className="text-right pl-2">
+                        <div className="text-[9px] uppercase font-bold text-zinc-500">Roster</div>
+                        <div className="text-xs font-mono font-bold text-zinc-400 mt-0.5">
+                          {t.players?.filter(p => p.player.role === 'batsman').length || 0}B • {t.players?.filter(p => p.player.role === 'wicketkeeper').length || 0}K • {t.players?.filter(p => p.player.role === 'allrounder').length || 0}A • {t.players?.filter(p => p.player.role === 'bowler').length || 0}W
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-right font-black text-zinc-350 flex-shrink-0">
-                      ₹{t.budget_remaining} Cr
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
           </section>
 
-          {/* Column 2 & 3: Active Auction Card & Bid control */}
-          <section className="lg:col-span-2 flex flex-col justify-between space-y-6">
-            {curPlayer ? (
-              <div className="flex-grow flex flex-col justify-between">
-                
-                {/* Player Stats Card */}
-                <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-6 relative overflow-hidden flex flex-col md:flex-row gap-6 shadow-2xl">
-                  {/* Subtle blur bg glow representing role color */}
-                  <div className="absolute top-0 right-0 w-[150px] h-[150px] bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-                  
-                  {/* Visual Player card representing stats */}
-                  <div className="w-full md:w-[180px] h-[220px] bg-gradient-to-b from-zinc-800 to-zinc-950 border-2 border-amber-400/40 rounded-2xl flex flex-col justify-between p-4 shadow-md relative overflow-hidden flex-shrink-0">
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent z-0" />
-                    
-                    <div className="flex justify-between items-center relative z-10">
-                      <span className="text-2xl">{getRoleIcon(curPlayer.player.role)}</span>
-                      <span className="text-[10px] bg-zinc-800 px-2 py-0.5 rounded font-black text-amber-400 border border-zinc-700 uppercase">
-                        {curPlayer.player.nationality}
-                      </span>
-                    </div>
-
-                    <div className="relative z-10 text-center">
-                      <div className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">IPL TEMPLATE</div>
-                      <div className="font-black text-base leading-tight mt-0.5">{curPlayer.player.name}</div>
-                      <div className="text-[10px] text-emerald-400 font-extrabold uppercase mt-1">
-                        {curPlayer.player.role}
-                      </div>
-                    </div>
-
-                    <div className="relative z-10 border-t border-zinc-800/80 pt-2 flex items-center justify-between text-xs">
-                      <div>
-                        <span className="text-[8px] text-zinc-500 uppercase block">Base Price</span>
-                        <span className="font-extrabold text-amber-300">₹{curPlayer.player.base_price} Cr</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-[8px] text-zinc-500 uppercase block">Pitch Match</span>
-                        <span className="font-extrabold text-zinc-300 text-[10px]">{curPlayer.player.pitch_suitability}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Player stats info list */}
-                  <div className="flex-grow space-y-4">
-                    <div>
-                      <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-950 font-black px-2.5 py-1 rounded-full uppercase tracking-wider">
-                        Current Candidate
-                      </span>
-                      <h2 className="text-2xl font-black mt-2 text-zinc-100">{curPlayer.player.name}</h2>
-                      <p className="text-xs text-zinc-500 mt-0.5">Global Seeding Pool • Realistic Stats</p>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 border-t border-zinc-800 pt-4">
-                      {curPlayer.player.role.toLowerCase() !== 'bowler' && (
-                        <>
-                          <div className="bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-center">
-                            <span className="text-[9px] text-zinc-500 uppercase font-bold block">Batting Avg</span>
-                            <span className="text-base font-black text-zinc-200 mt-1 block">{curPlayer.player.batting_avg}</span>
-                          </div>
-                          <div className="bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-center">
-                            <span className="text-[9px] text-zinc-500 uppercase font-bold block">Strike Rate</span>
-                            <span className="text-base font-black text-zinc-200 mt-1 block">{curPlayer.player.strike_rate}</span>
-                          </div>
-                        </>
-                      )}
-                      {curPlayer.player.role.toLowerCase() !== 'batsman' && (
-                        <>
-                          <div className="bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-center">
-                            <span className="text-[9px] text-zinc-500 uppercase font-bold block">Economy</span>
-                            <span className="text-base font-black text-zinc-200 mt-1 block">{curPlayer.player.bowling_economy}</span>
-                          </div>
-                          <div className="bg-zinc-950/40 border border-zinc-900 rounded-xl p-3 text-center">
-                            <span className="text-[9px] text-zinc-500 uppercase font-bold block">Bowling Avg</span>
-                            <span className="text-base font-black text-zinc-200 mt-1 block">{curPlayer.player.bowling_avg}</span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    <div className="p-3 bg-zinc-950/30 border border-zinc-900 rounded-xl text-xs text-zinc-400 space-y-1.5">
-                      <div className="flex justify-between">
-                        <span>Physical Fitness:</span>
-                        <span className="font-extrabold text-zinc-200">{Math.round(curPlayer.fitness * 100)}%</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Current Seeding Form:</span>
-                        <span className="font-extrabold text-zinc-200">{curPlayer.current_form} / 1.0</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Bidding Control Panel */}
-                <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-6 flex flex-col items-stretch gap-6 relative overflow-hidden shadow-2xl">
-                  {/* Dynamic Draining Progress Bar */}
-                  <div className="absolute top-0 left-0 right-0 h-1.5 bg-zinc-950 overflow-hidden">
-                    <div 
-                      className={`h-full transition-all duration-1000 ease-linear ${
-                        timerDisplay <= 5 
-                          ? 'bg-gradient-to-r from-red-600 to-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' 
-                          : 'bg-gradient-to-r from-emerald-600 to-emerald-400'
-                      }`}
-                      style={{ width: `${(timerDisplay / (rtmActive ? 10 : 15)) * 100}%` }}
-                    />
-                  </div>
-
-                  {/* Sleek Color-coded Status Banner */}
-                  <div className={`-mx-6 -mt-6 p-3 text-center text-xs font-black tracking-wide border-b uppercase flex items-center justify-center gap-2 transition-all ${
-                    rtmActive
-                      ? isMyRtm
-                        ? 'bg-amber-950/40 border-amber-900/40 text-amber-300 animate-pulse'
-                        : 'bg-zinc-900 border-zinc-800 text-zinc-400'
-                      : curBid === null || curBid === undefined
-                        ? 'bg-zinc-900 border-zinc-800 text-zinc-400'
-                        : curBidderId === assignedTeamId
-                          ? 'bg-emerald-950/40 border-emerald-900/40 text-emerald-400 shadow-[inset_0_1px_10px_rgba(16,185,129,0.05)]'
-                          : 'bg-red-950/20 border-red-950/40 text-red-400'
-                  }`}>
-                    {rtmActive ? (
-                      isMyRtm ? (
-                        <>
-                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                          <span>Right To Match Decision Required!</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="w-2 h-2 rounded-full bg-zinc-600" />
-                          <span>RTM Window: Waiting for {rtmTeam?.name || 'Owner'}</span>
-                        </>
-                      )
-                    ) : curBid === null || curBid === undefined ? (
-                      <>
-                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                        <span>Awaiting first bid from room...</span>
-                      </>
-                    ) : curBidderId === assignedTeamId ? (
-                      <>
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                        <span>🎉 You currently hold the highest bid!</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                        <span>⚠️ Outbid! Highest bid held by {currentBidder?.name || 'opponent'}</span>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-                    {/* Bidding State displays */}
-                    <div className="flex-grow space-y-2 text-center md:text-left">
-                      <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Current High Bid</span>
-                      <div className="text-4xl font-black text-zinc-100 flex items-center justify-center md:justify-start gap-2">
-                        {curBid !== null ? (
-                          <>
-                            <span>₹{curBid}</span>
-                            <span className="text-lg text-zinc-500">Crore</span>
-                          </>
-                        ) : (
-                          <span className="text-xl text-zinc-500 font-bold uppercase tracking-wider">No Bid (Starts at ₹{basePrice} Cr)</span>
-                        )}
-                      </div>
-                      {currentBidder && (
-                        <span className="text-xs text-zinc-400 font-bold block">
-                          Held by: <span className={curBidderId === assignedTeamId ? "text-emerald-400" : "text-zinc-350"}>{currentBidder.name}</span>
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Live countdown timer */}
-                    <div className="flex-shrink-0 flex flex-col items-center justify-center w-28 h-28 border border-zinc-800 rounded-full bg-zinc-950/80 shadow-inner relative">
-                      <Timer className={`w-6 h-6 mb-1 ${timerDisplay <= 5 ? 'text-red-500 animate-pulse' : 'text-zinc-500'}`} />
-                      <span className={`text-2xl font-black ${timerDisplay <= 5 ? 'text-red-500 animate-pulse' : 'text-zinc-200'}`}>{timerDisplay}s</span>
-                      <span className="text-[8px] uppercase tracking-widest text-zinc-650 font-bold mt-0.5">
-                        {rtmActive ? 'RTM Lock' : 'Time left'}
-                      </span>
-                    </div>
-
-                    {/* Manual bid controls */}
-                    <div className="w-full md:w-auto flex flex-col gap-2">
-                      {rtmActive ? (
-                        isMyRtm ? (
-                          <div className="p-4 bg-amber-950/20 border border-amber-500/40 rounded-xl space-y-3 text-center">
-                            <span className="text-xs text-amber-300 font-bold flex items-center justify-center gap-1.5">
-                              <ShieldAlert className="w-4 h-4" /> Exercise RTM Card?
-                            </span>
-                            <p className="text-[10px] text-zinc-400 max-w-[200px]">
-                              Match the bid of ₹{curBid} Cr to retain {curPlayer.player.name}?
-                            </p>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => handleRtm('MATCH')}
-                                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black rounded-lg text-xs transition-all shadow-md"
-                              >
-                                Match Bid (RTM)
-                              </button>
-                              <button
-                                onClick={() => handleRtm('DECLINE')}
-                                className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold rounded-lg text-xs transition-all border border-zinc-700"
-                              >
-                                Decline
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="p-4 bg-zinc-950/50 border border-zinc-800 rounded-xl text-center">
-                            <span className="text-[10px] text-zinc-500 uppercase font-bold block tracking-wider">RTM ACTIVE</span>
-                            <span className="text-xs font-bold text-amber-400 mt-1 block">
-                              Waiting for {rtmTeam?.name} to respond...
-                            </span>
-                          </div>
-                        )
-                      ) : (
-                        <>
-                          <button
-                            onClick={handlePlaceBid}
-                            disabled={curBidderId === assignedTeamId}
-                            className={`px-8 py-4 text-zinc-950 font-black rounded-xl shadow-lg text-sm tracking-wide transition-all uppercase flex items-center justify-center gap-2 ${
-                              curBidderId === assignedTeamId 
-                                ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700 shadow-none' 
-                                : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 hover:shadow-emerald-950/20'
-                            }`}
-                          >
-                            <span>{curBidderId === assignedTeamId ? 'Highest Bidder' : `Bid ₹${nextBidAmount} Cr`}</span>
-                            <ChevronRight className="w-4 h-4" />
-                          </button>
-                          <span className="text-[9px] text-zinc-500 text-center font-bold uppercase tracking-wider block">
-                            {curBidderId === assignedTeamId ? 'You currently hold the top spot' : 'Click to submit next bid increment'}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-12 text-center flex-grow flex flex-col justify-center items-center gap-4">
-                <Trophy className="w-12 h-12 text-emerald-400/30 animate-pulse" />
-                <h3 className="font-extrabold text-zinc-400">Auction Loading...</h3>
-                <p className="text-xs text-zinc-500 max-w-sm">The auction manager is preparing the first player. Stand by...</p>
-              </div>
-            )}
-          </section>
-
-          {/* Column 4: Bidding Feed log */}
-          <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-5 space-y-4 overflow-hidden flex flex-col justify-between max-h-[calc(100vh-140px)]">
-            <h2 className="text-xs uppercase font-extrabold tracking-wider text-zinc-400 pb-2 border-b border-zinc-800 flex items-center gap-2">
-              <Radio className="w-4 h-4 text-emerald-400 animate-pulse" /> Bidding Feed
-            </h2>
+          {/* Column 2 & 3: Arena Clock, Queue, Available Players list */}
+          <section className="lg:col-span-2 flex flex-col gap-4 overflow-hidden max-h-full">
             
-            <div className="flex-grow overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
-              {bidLog.length === 0 ? (
-                <div className="text-xs text-zinc-600 italic text-center pt-8">
-                  No actions logged. Bidding ticker is active...
-                </div>
-              ) : (
-                bidLog.map((log, i) => {
-                  let isSold = log.includes("SOLD!");
-                  let isNew = log.includes("New player");
-                  let isUnsold = log.includes("UNSOLD!");
+            {/* Top Draft Banner & Clock Panel */}
+            <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-5 shadow-lg relative overflow-hidden flex-shrink-0 space-y-4">
+              {/* Progress timer bar */}
+              <div className="absolute top-0 left-0 right-0 h-1 bg-zinc-950 overflow-hidden">
+                <div 
+                  className={`h-full transition-all duration-1000 ease-linear ${
+                    timerDisplay <= 5 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'
+                  }`}
+                  style={{ width: `${(timerDisplay / 30) * 100}%` }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-[10px] text-zinc-500 uppercase font-black tracking-widest block">
+                    ROUND {round_num} / {max_squad_size || 15} • PICK {pick_in_round + 1}
+                  </span>
                   
-                  return (
-                    <div 
-                      key={i} 
-                      className={`p-3 rounded-xl border text-xs leading-relaxed font-semibold transition-all ${
-                        isSold 
-                          ? 'bg-emerald-950/20 border-emerald-950 text-emerald-300' 
-                          : isNew
-                          ? 'bg-amber-950/15 border-amber-950 text-amber-300'
-                          : isUnsold
-                          ? 'bg-red-950/15 border-red-950 text-red-400'
-                          : 'bg-zinc-950/60 border-zinc-900 text-zinc-400'
+                  <h1 className="text-xl font-black mt-1 text-zinc-100">
+                    {isMyTurn ? (
+                      <span className="text-emerald-400 animate-pulse flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                        YOUR TURN TO DRAFT!
+                      </span>
+                    ) : (
+                      <span className="text-zinc-300">{activeTeam?.name} is Drafting...</span>
+                    )}
+                  </h1>
+                </div>
+
+                {/* Clock indicator */}
+                <div className="flex items-center gap-2 px-4 py-2 bg-zinc-950 border border-zinc-850 rounded-2xl">
+                  <Timer className={`w-4 h-4 ${timerDisplay <= 5 ? 'text-red-500 animate-bounce' : 'text-zinc-500'}`} />
+                  <span className={`text-lg font-mono font-black ${timerDisplay <= 5 ? 'text-red-500' : 'text-zinc-200'}`}>
+                    {timerDisplay}s
+                  </span>
+                </div>
+              </div>
+
+              {/* Snake pick queue */}
+              <div className="border-t border-zinc-900 pt-3">
+                <span className="text-[9px] text-zinc-500 uppercase font-bold tracking-wider block mb-2">Snake Queue Order</span>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                  {nextPicks.map((pick, idx) => {
+                    const isActivePick = idx === 0;
+                    const isMyPick = pick.team.id === assignedTeamId;
+                    return (
+                      <div 
+                        key={idx}
+                        className={`flex items-center gap-1 px-3 py-1.5 rounded-xl border text-[10px] font-bold flex-shrink-0 transition-all ${
+                          isActivePick 
+                            ? 'bg-emerald-950/20 border-emerald-500 text-emerald-400 font-extrabold shadow-sm' 
+                            : 'bg-zinc-950/40 border-zinc-900 text-zinc-500'
+                        }`}
+                      >
+                        <span className="text-zinc-500 text-[8px]">{idx === 0 ? "CLOCK" : `#${idx + 1}`}</span>
+                        <span className={isMyPick ? "text-amber-400" : ""}>{pick.team.short_name}</span>
+                        {isMyPick && <span className="bg-amber-500 text-zinc-950 text-[7px] px-0.5 rounded">YOU</span>}
+                        {pick.team.is_ai && <span className="text-[7px] text-zinc-650 bg-zinc-900 px-0.5 rounded">AI</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Available Players & Filters */}
+            <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-5 flex flex-col gap-4 overflow-hidden flex-grow max-h-full">
+              
+              {/* Category selector & Filter inputs */}
+              <div className="space-y-3 flex-shrink-0">
+                <div className="flex flex-col sm:flex-row gap-3 items-stretch justify-between">
+                  {/* Search and Nationality filter */}
+                  <div className="flex-grow flex gap-2">
+                    <input 
+                      type="text"
+                      placeholder="🔍 Search available players by name..."
+                      value={draftSearchQuery}
+                      onChange={(e) => setDraftSearchQuery(e.target.value)}
+                      className="flex-grow bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-3 py-2 text-xs focus:outline-none text-zinc-200 placeholder:text-zinc-600 transition-all"
+                    />
+                    
+                    <select
+                      value={draftNationalityFilter}
+                      onChange={(e: any) => setDraftNationalityFilter(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-2 py-2 text-xs focus:outline-none text-zinc-300"
+                    >
+                      <option value="all">All Nations</option>
+                      <option value="Indian">🇮🇳 Indian</option>
+                      <option value="Overseas">✈️ Overseas</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Role Tabs */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 border-b border-zinc-900 scrollbar-thin">
+                  {[
+                    { id: 'all', name: 'All Players', count: (roomState.unsold_players || []).length },
+                    { id: 'batsman', name: '🏏 Batsmen', count: (roomState.unsold_players || []).filter(p => p.player.role === 'batsman').length },
+                    { id: 'wicketkeeper', name: '🧤 Keepers', count: (roomState.unsold_players || []).filter(p => p.player.role === 'wicketkeeper').length },
+                    { id: 'allrounder', name: '⚡ Allrounders', count: (roomState.unsold_players || []).filter(p => p.player.role === 'allrounder').length },
+                    { id: 'bowler', name: 'Bowlers ⚾', count: (roomState.unsold_players || []).filter(p => p.player.role === 'bowler').length },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setDraftRoleTab(tab.id as any)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 flex-shrink-0 ${
+                        draftRoleTab === tab.id
+                          ? 'bg-zinc-800 text-emerald-400 font-extrabold border border-zinc-700'
+                          : 'bg-zinc-950/60 border-zinc-900 text-zinc-400 hover:text-zinc-300'
                       }`}
                     >
-                      {log}
+                      <span>{tab.name}</span>
+                      <span className="text-[9px] bg-zinc-900 px-1.5 py-0.5 rounded text-zinc-500 font-medium">
+                        {tab.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Player list scroll viewport */}
+              <div className="flex-grow overflow-y-auto pr-1 space-y-3 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+                {sortedFilteredUnsold.length === 0 ? (
+                  <div className="text-center py-16 text-zinc-500 italic text-xs">
+                    No available players match your search filter.
+                  </div>
+                ) : (
+                  sortedFilteredUnsold.map((rp) => {
+                    const isDraftingThis = draftingPlayerId === rp.id;
+                    const role = rp.player.role.toLowerCase();
+                    return (
+                      <div 
+                        key={rp.id}
+                        className="bg-zinc-950/50 hover:bg-zinc-950/90 border border-zinc-900 hover:border-zinc-800 rounded-2xl p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-all"
+                      >
+                        {/* Player name, role, details */}
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-extrabold text-sm text-zinc-200">{rp.player.name}</span>
+                            <span className="text-[10px] bg-zinc-900 text-zinc-400 px-2 py-0.5 border border-zinc-800 rounded uppercase font-semibold">
+                              {rp.player.nationality === 'Indian' ? '🇮🇳 IND' : '✈️ OVS'}
+                            </span>
+                            <span className="text-xs">{getRoleIcon(rp.player.role)}</span>
+                          </div>
+                          
+                          {/* Role detail summary */}
+                          <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
+                            {rp.player.role} • Pitch: {rp.player.pitch_suitability} • Value: ₹{rp.player.base_price} Cr
+                          </div>
+
+                          {/* Stats Grid */}
+                          <div className="flex items-center gap-4 text-[10px] font-semibold text-zinc-400 pt-1.5">
+                            {role !== 'bowler' && (
+                              <>
+                                <span>Bat Avg: <strong className="text-zinc-200">{rp.player.batting_avg}</strong></span>
+                                <span>Strike Rate: <strong className="text-zinc-200">{rp.player.strike_rate}</strong></span>
+                              </>
+                            )}
+                            {role !== 'batsman' && (
+                              <>
+                                <span>Econ: <strong className="text-zinc-200">{rp.player.bowling_economy}</strong></span>
+                                <span>Bowl Avg: <strong className="text-zinc-200">{rp.player.bowling_avg}</strong></span>
+                              </>
+                            )}
+                            <span>Form: <strong className="text-zinc-300">{rp.current_form}</strong></span>
+                          </div>
+                        </div>
+
+                        {/* Action draft button */}
+                        <div className="flex-shrink-0 w-full sm:w-auto">
+                          <button
+                            onClick={() => handleDraftPlayer(rp.id)}
+                            disabled={!isMyTurn || draftingPlayerId !== null}
+                            className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-extrabold text-xs uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 ${
+                              isMyTurn
+                                ? isDraftingThis
+                                  ? 'bg-zinc-850 text-emerald-400 border border-zinc-750'
+                                  : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black'
+                                : 'bg-zinc-900 border border-zinc-850 text-zinc-650 cursor-not-allowed shadow-none'
+                            }`}
+                          >
+                            {isDraftingThis ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                Drafting...
+                              </>
+                            ) : (
+                              <>
+                                <span>Draft Player</span>
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+            </div>
+          </section>
+
+          {/* Column 4 (Right): Live Draft Feed & Roster tracker */}
+          <section className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-5 flex flex-col gap-4 overflow-hidden max-h-full">
+            {/* Feed Section */}
+            <div className="flex-grow flex flex-col gap-3 overflow-hidden h-1/2">
+              <h2 className="text-xs uppercase font-extrabold tracking-wider text-zinc-400 pb-2 border-b border-zinc-800 flex items-center gap-2 flex-shrink-0">
+                <Radio className="w-4 h-4 text-emerald-400 animate-pulse" /> Draft Feed Log
+              </h2>
+              
+              <div className="flex-grow overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent text-[11px] font-medium text-zinc-400 animate-in fade-in">
+                {bidLog.length === 0 ? (
+                  <div className="text-zinc-650 italic text-center pt-8">
+                    Waiting for draft selections...
+                  </div>
+                ) : (
+                  bidLog.map((log, i) => {
+                    const isDrafted = log.includes("drafted");
+                    const isTimeout = log.includes("ran out of time");
+                    return (
+                      <div 
+                        key={i} 
+                        className={`p-2.5 rounded-xl border transition-all ${
+                          isTimeout
+                            ? 'bg-red-950/15 border-red-950/40 text-red-300'
+                            : isDrafted
+                            ? 'bg-emerald-950/20 border-emerald-950/40 text-emerald-300'
+                            : 'bg-zinc-950/60 border-zinc-900 text-zinc-500'
+                        }`}
+                      >
+                        {log}
+                      </div>
+                    );
+                  })
+                )}
+                <div ref={commEndRef} />
+              </div>
+            </div>
+
+            {/* My Roster Checklist Progress Section */}
+            <div className="border-t border-zinc-800 pt-4 flex-grow flex flex-col gap-3 overflow-hidden h-1/2">
+              <h2 className="text-xs uppercase font-extrabold tracking-wider text-zinc-400 flex items-center gap-2 flex-shrink-0">
+                <ShieldCheck className="w-4 h-4 text-emerald-500" /> Your Roster Progress
+              </h2>
+
+              <div className="space-y-3 overflow-y-auto pr-1 flex-grow scrollbar-thin">
+                {[
+                  { name: 'Batsmen', current: userBatsmen.length, target: 5, data: userBatsmen, icon: '🏏' },
+                  { name: 'Keepers', current: userKeepers.length, target: 2, data: userKeepers, icon: '🧤' },
+                  { name: 'Allrounders', current: userAllrounders.length, target: 3, data: userAllrounders, icon: '⚡' },
+                  { name: 'Bowlers', current: userBowlers.length, target: 5, data: userBowlers, icon: '⚾' },
+                ].map((roleGroup) => {
+                  const isDone = roleGroup.current >= roleGroup.target;
+                  return (
+                    <div key={roleGroup.name} className="space-y-1.5 p-3 rounded-2xl bg-zinc-950/40 border border-zinc-900 text-xs">
+                      <div className="flex items-center justify-between font-bold text-zinc-400">
+                        <span>{roleGroup.icon} {roleGroup.name}</span>
+                        <span className={isDone ? "text-emerald-400" : "text-zinc-500"}>
+                          {roleGroup.current} / {roleGroup.target}
+                        </span>
+                      </div>
+
+                      {/* Display small capsule of drafted players */}
+                      {roleGroup.data.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5 pt-1 border-t border-zinc-900/60 mt-1">
+                          {roleGroup.data.map((rp) => (
+                            <span 
+                              key={rp.id}
+                              className="text-[9px] font-semibold bg-zinc-900 border border-zinc-850 px-2 py-0.5 rounded-full text-zinc-350"
+                            >
+                              {rp.player.name.split(' ').pop()}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-[9px] text-zinc-600 italic block pt-1 border-t border-zinc-900/40">No draft choices yet.</span>
+                      )}
                     </div>
                   );
-                })
-              )}
-              <div ref={commEndRef} />
+                })}
+              </div>
             </div>
           </section>
 

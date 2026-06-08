@@ -81,6 +81,7 @@ export interface RoomState {
   room_code: string;
   room_status: string; // 'LOBBY', 'AUCTION', 'MANAGEMENT', 'TOURNAMENT', 'FINISHED'
   teams: Team[];
+  unsold_players?: RoomPlayer[];
   auction_state: {
     room_id: string;
     current_player_id: string | null;
@@ -122,6 +123,15 @@ export const api = {
     }
     const res = await fetch(url.toString(), {
       method: 'POST',
+    });
+    if (!res.ok) throw new Error(await res.text());
+  },
+
+  async draftPlayer(roomCode: string, teamId: string, playerId: string): Promise<void> {
+    const res = await fetch(`${API_BASE_URL}/api/rooms/${roomCode}/draft-player`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team_id: teamId, player_id: playerId }),
     });
     if (!res.ok) throw new Error(await res.text());
   },
