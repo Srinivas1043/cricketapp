@@ -37,6 +37,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Database initialization on startup
+@app.on_event("startup")
+async def startup_db():
+    """Initialize database schema and seed with players on startup"""
+    try:
+        from backend.database import engine
+        from backend.models import Player
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from sqlalchemy import select
+        
+        logger.info("🔄 Checking database schema...")
+        
+        # Create tables
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("✅ Database schema ready")
+        
+        # Check if players exist
+        async_session = AsyncSession(engine, expire_on_commit=False)
+        async with async_session as session:
+            result = await session.execute(select(Player))
+            existing_players = result.scalars().all()
+            
+            if len(existing_players) == 0:
+                logger.info("📊 No players found. Seeding database...")
+                from backend.seed import seed_database
+                await seed_database(engine=engine)
+                logger.info("✅ Database seeded successfully!")
+            else:
+                logger.info(f"✅ Database ready with {len(existing_players)} players")
+                
+    except Exception as e:
+        logger.error(f"⚠️ Error during database initialization: {e}")
+        # Continue anyway - might just be a schema creation issue
+
 # Standard IPL Teams
 DEFAULT_TEAMS = [
     {"name": "Chennai Super Kings", "short_name": "CSK", "home_ground": "M. A. Chidambaram Stadium"},

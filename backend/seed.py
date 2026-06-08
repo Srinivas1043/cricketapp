@@ -143,33 +143,58 @@ PLAYERS_DATA = [
     {"name": "Tushar Deshpande", "role": "bowler", "nationality": "Indian", "batting_avg": 5.0, "strike_rate": 80.0, "bowling_economy": 8.5, "bowling_avg": 23.5, "base_price": 0.5, "pitch_suitability": "PACE", "ipl_team": "CSK", "ipl_season": 2024},
 ]
 
-async def seed_database():
-    print("Connecting to the database at:", DATABASE_URL)
-    engine = create_async_engine(DATABASE_URL, echo=True)
+async def seed_database(engine=None, drop_existing=False):
+    """Seed database with IPL players. Optionally accepts an existing engine.
     
-    # Drop existing tables and recreate with new schema
+    Args:
+        engine: Optional SQLAlchemy async engine to use
+        drop_existing: Whether to drop existing tables (for fresh setup)
+    """
+    
+    if engine is None:
+        print("Connecting to the database at:", DATABASE_URL)
+        engine = create_async_engine(DATABASE_URL, echo=True)
+        should_dispose = True
+    else:
+        should_dispose = False
+    
+    # Handle table recreation
     async with engine.begin() as conn:
-        print("Dropping existing tables...")
-        await conn.run_sync(Base.metadata.drop_all)
-        print("Tables dropped successfully.")
+        if drop_existing:
+            print("Dropping existing tables...")
+            await conn.run_sync(Base.metadata.drop_all)
+            print("Tables dropped successfully.")
         
-        print("Creating new tables with updated schema...")
+        print("Creating tables with current schema...")
         await conn.run_sync(Base.metadata.create_all)
-        print("Tables created successfully.")
+        print("Tables created/verified successfully.")
         
     # Seed player data
     from sqlalchemy.ext.asyncio import AsyncSession
-    async_session = AsyncSession(engine, expire_on_commit=False)
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import func
     
-    async with async_session as session:
-        print(f"Seeding {len(PLAYERS_DATA)} players...")
-        for p_dict in PLAYERS_DATA:
-            player = Player(**p_dict)
-            session.add(player)
-        await session.commit()
-        print("Database seeded successfully!")
-            
-    await engine.dispose()
+    async_session_factory = sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+    
+    async with async_session_factory() as session:
+        # Check if players already exist
+        count_result = await session.execute(select(func.count(Player.id)))
+        player_count = count_result.scalar_one()
+        
+        if player_count == 0:
+            print(f"Seeding {len(PLAYERS_DATA)} players...")
+            for p_dict in PLAYERS_DATA:
+                player = Player(**p_dict)
+                session.add(player)
+            await session.commit()
+            print("Database seeded successfully!")
+        else:
+            print(f"Database already has {player_count} players. Skipping seed.")
+    
+    if should_dispose:
+        await engine.dispose()
 
 if __name__ == "__main__":
     asyncio.run(seed_database())
