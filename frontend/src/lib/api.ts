@@ -115,8 +115,12 @@ export const api = {
     return res.json();
   },
 
-  async startAuction(roomCode: string): Promise<void> {
-    const res = await fetch(`${API_BASE_URL}/api/rooms/${roomCode}/start-auction`, {
+  async startAuction(roomCode: string, excludeAi?: boolean): Promise<void> {
+    const url = new URL(`${API_BASE_URL}/api/rooms/${roomCode}/start-auction`);
+    if (excludeAi !== undefined) {
+      url.searchParams.append('exclude_ai', excludeAi.toString());
+    }
+    const res = await fetch(url.toString(), {
       method: 'POST',
     });
     if (!res.ok) throw new Error(await res.text());

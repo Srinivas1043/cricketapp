@@ -45,6 +45,7 @@ export default function GamePage() {
   const [auctionFilter, setAuctionFilter] = useState<'all' | 'friends' | 'ai'>('all');
   const [squadFilter, setSquadFilter] = useState<'all' | 'friends' | 'ai'>('all');
   const [standingsFilter, setStandingsFilter] = useState<'all' | 'friends' | 'ai'>('all');
+  const [excludeAi, setExcludeAi] = useState(false);
 
   // Match center state
   const [activeMatch, setActiveMatch] = useState<Match | null>(null);
@@ -293,7 +294,7 @@ export default function GamePage() {
   const handleStartAuction = async () => {
     if (!roomCode) return;
     try {
-      await api.startAuction(roomCode);
+      await api.startAuction(roomCode, excludeAi);
     } catch (err: any) {
       setError(err.message);
     }
@@ -714,7 +715,7 @@ export default function GamePage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="md:col-span-2 bg-zinc-900/60 border border-zinc-800 rounded-3xl p-6 space-y-4">
               <h2 className="text-lg font-black border-b border-zinc-800 pb-3 flex items-center gap-2">
-                <Users className="w-5 h-5 text-emerald-400" /> Room Franchises (10 Total)
+                <Users className="w-5 h-5 text-emerald-400" /> Room Franchises ({roomState.teams.length} Total)
               </h2>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -770,7 +771,21 @@ export default function GamePage() {
               </div>
 
               {isHost ? (
-                <div className="pt-6">
+                <div className="pt-6 space-y-4">
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-950/40 border border-zinc-800">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-black text-zinc-300">Exclude AI Teams</span>
+                      <span className="text-[10px] text-zinc-500 font-medium">Keep only friend/human franchises</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      id="exclude-ai-checkbox"
+                      checked={excludeAi}
+                      onChange={(e) => setExcludeAi(e.target.checked)}
+                      className="w-4 h-4 rounded border-zinc-700 text-emerald-500 focus:ring-emerald-500 bg-zinc-900 cursor-pointer"
+                    />
+                  </div>
+                  
                   <button
                     onClick={handleStartAuction}
                     className="w-full py-4 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black rounded-xl shadow-lg shadow-emerald-950/20 transition-all flex items-center justify-center gap-2"
@@ -778,8 +793,10 @@ export default function GamePage() {
                     <Play className="w-5 h-5 fill-current" />
                     <span>START AUCTION POOL</span>
                   </button>
-                  <p className="text-[10px] text-zinc-500 text-center mt-2 font-bold uppercase tracking-wider">
-                    You are host. Unfilled slots will become AI teams.
+                  <p className="text-[10px] text-zinc-500 text-center font-bold uppercase tracking-wider">
+                    {excludeAi 
+                      ? "Only human teams will play (plus 1 AI if total is odd to maintain even matchups)."
+                      : "You are host. Unfilled slots will become AI teams."}
                   </p>
                 </div>
               ) : (
@@ -1011,88 +1028,147 @@ export default function GamePage() {
                 </div>
 
                 {/* Bidding Control Panel */}
-                <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-6 flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden shadow-2xl">
-                  
-                  {/* Bidding State displays */}
-                  <div className="flex-grow space-y-2 text-center md:text-left">
-                    <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Current High Bid</span>
-                    <div className="text-4xl font-black text-zinc-100 flex items-center justify-center md:justify-start gap-2">
-                      {curBid !== null ? (
-                        <>
-                          <span>₹{curBid}</span>
-                          <span className="text-lg text-zinc-500">Crore</span>
-                        </>
-                      ) : (
-                        <span className="text-xl text-zinc-500 font-bold uppercase tracking-wider">No Bid (Starts at ₹{basePrice} Cr)</span>
-                      )}
-                    </div>
-                    {currentBidder && (
-                      <span className="text-xs text-zinc-400 font-bold block">
-                        Held by: <span className="text-emerald-400">{currentBidder.name}</span>
-                      </span>
-                    )}
+                <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-6 flex flex-col items-stretch gap-6 relative overflow-hidden shadow-2xl">
+                  {/* Dynamic Draining Progress Bar */}
+                  <div className="absolute top-0 left-0 right-0 h-1.5 bg-zinc-950 overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-1000 ease-linear ${
+                        timerDisplay <= 5 
+                          ? 'bg-gradient-to-r from-red-600 to-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' 
+                          : 'bg-gradient-to-r from-emerald-600 to-emerald-400'
+                      }`}
+                      style={{ width: `${(timerDisplay / (rtmActive ? 10 : 15)) * 100}%` }}
+                    />
                   </div>
 
-                  {/* Live countdown timer */}
-                  <div className="flex-shrink-0 flex flex-col items-center justify-center w-28 h-28 border border-zinc-800 rounded-full bg-zinc-950/80 shadow-inner relative">
-                    <Timer className={`w-6 h-6 mb-1 ${timerDisplay <= 5 ? 'text-red-500 animate-pulse' : 'text-zinc-500'}`} />
-                    <span className={`text-2xl font-black ${timerDisplay <= 5 ? 'text-red-500' : 'text-zinc-200'}`}>{timerDisplay}s</span>
-                    <span className="text-[8px] uppercase tracking-widest text-zinc-600 font-bold mt-0.5">
-                      {rtmActive ? 'RTM Lock' : 'Time left'}
-                    </span>
-                  </div>
-
-                  {/* Manual bid controls */}
-                  <div className="w-full md:w-auto flex flex-col gap-2">
+                  {/* Sleek Color-coded Status Banner */}
+                  <div className={`-mx-6 -mt-6 p-3 text-center text-xs font-black tracking-wide border-b uppercase flex items-center justify-center gap-2 transition-all ${
+                    rtmActive
+                      ? isMyRtm
+                        ? 'bg-amber-950/40 border-amber-900/40 text-amber-300 animate-pulse'
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400'
+                      : curBid === null || curBid === undefined
+                        ? 'bg-zinc-900 border-zinc-800 text-zinc-400'
+                        : curBidderId === assignedTeamId
+                          ? 'bg-emerald-950/40 border-emerald-900/40 text-emerald-400 shadow-[inset_0_1px_10px_rgba(16,185,129,0.05)]'
+                          : 'bg-red-950/20 border-red-950/40 text-red-400'
+                  }`}>
                     {rtmActive ? (
                       isMyRtm ? (
-                        <div className="p-4 bg-amber-950/20 border border-amber-500/40 rounded-xl space-y-3 text-center">
-                          <span className="text-xs text-amber-300 font-bold flex items-center justify-center gap-1.5">
-                            <ShieldAlert className="w-4 h-4" /> Exercise RTM Card?
-                          </span>
-                          <p className="text-[10px] text-zinc-400 max-w-[200px]">
-                            Match the bid of ₹{curBid} Cr to retain {curPlayer.player.name}?
-                          </p>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => handleRtm('MATCH')}
-                              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black rounded-lg text-xs transition-all shadow-md"
-                            >
-                              Match Bid (RTM)
-                            </button>
-                            <button
-                              onClick={() => handleRtm('DECLINE')}
-                              className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold rounded-lg text-xs transition-all border border-zinc-700"
-                            >
-                              Decline
-                            </button>
-                          </div>
-                        </div>
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                          <span>Right To Match Decision Required!</span>
+                        </>
                       ) : (
-                        <div className="p-4 bg-zinc-950/50 border border-zinc-800 rounded-xl text-center">
-                          <span className="text-[10px] text-zinc-500 uppercase font-bold block tracking-wider">RTM ACTIVE</span>
-                          <span className="text-xs font-bold text-amber-400 mt-1 block">
-                            Waiting for {rtmTeam?.name} to respond...
-                          </span>
-                        </div>
+                        <>
+                          <span className="w-2 h-2 rounded-full bg-zinc-600" />
+                          <span>RTM Window: Waiting for {rtmTeam?.name || 'Owner'}</span>
+                        </>
                       )
+                    ) : curBid === null || curBid === undefined ? (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                        <span>Awaiting first bid from room...</span>
+                      </>
+                    ) : curBidderId === assignedTeamId ? (
+                      <>
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                        <span>🎉 You currently hold the highest bid!</span>
+                      </>
                     ) : (
                       <>
-                        <button
-                          onClick={handlePlaceBid}
-                          className="px-8 py-4 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black rounded-xl shadow-lg shadow-emerald-950/20 text-sm tracking-wide transition-all uppercase flex items-center justify-center gap-2"
-                        >
-                          <span>Bid ₹{nextBidAmount} Cr</span>
-                          <ChevronRight className="w-4 h-4" />
-                        </button>
-                        <span className="text-[9px] text-zinc-500 text-center font-bold uppercase tracking-wider block">
-                          Click to submit next bid increment
-                        </span>
+                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                        <span>⚠️ Outbid! Highest bid held by {currentBidder?.name || 'opponent'}</span>
                       </>
                     )}
                   </div>
-                </div>
 
+                  <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                    {/* Bidding State displays */}
+                    <div className="flex-grow space-y-2 text-center md:text-left">
+                      <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Current High Bid</span>
+                      <div className="text-4xl font-black text-zinc-100 flex items-center justify-center md:justify-start gap-2">
+                        {curBid !== null ? (
+                          <>
+                            <span>₹{curBid}</span>
+                            <span className="text-lg text-zinc-500">Crore</span>
+                          </>
+                        ) : (
+                          <span className="text-xl text-zinc-500 font-bold uppercase tracking-wider">No Bid (Starts at ₹{basePrice} Cr)</span>
+                        )}
+                      </div>
+                      {currentBidder && (
+                        <span className="text-xs text-zinc-400 font-bold block">
+                          Held by: <span className={curBidderId === assignedTeamId ? "text-emerald-400" : "text-zinc-350"}>{currentBidder.name}</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Live countdown timer */}
+                    <div className="flex-shrink-0 flex flex-col items-center justify-center w-28 h-28 border border-zinc-800 rounded-full bg-zinc-950/80 shadow-inner relative">
+                      <Timer className={`w-6 h-6 mb-1 ${timerDisplay <= 5 ? 'text-red-500 animate-pulse' : 'text-zinc-500'}`} />
+                      <span className={`text-2xl font-black ${timerDisplay <= 5 ? 'text-red-500 animate-pulse' : 'text-zinc-200'}`}>{timerDisplay}s</span>
+                      <span className="text-[8px] uppercase tracking-widest text-zinc-650 font-bold mt-0.5">
+                        {rtmActive ? 'RTM Lock' : 'Time left'}
+                      </span>
+                    </div>
+
+                    {/* Manual bid controls */}
+                    <div className="w-full md:w-auto flex flex-col gap-2">
+                      {rtmActive ? (
+                        isMyRtm ? (
+                          <div className="p-4 bg-amber-950/20 border border-amber-500/40 rounded-xl space-y-3 text-center">
+                            <span className="text-xs text-amber-300 font-bold flex items-center justify-center gap-1.5">
+                              <ShieldAlert className="w-4 h-4" /> Exercise RTM Card?
+                            </span>
+                            <p className="text-[10px] text-zinc-400 max-w-[200px]">
+                              Match the bid of ₹{curBid} Cr to retain {curPlayer.player.name}?
+                            </p>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleRtm('MATCH')}
+                                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black rounded-lg text-xs transition-all shadow-md"
+                              >
+                                Match Bid (RTM)
+                              </button>
+                              <button
+                                onClick={() => handleRtm('DECLINE')}
+                                className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold rounded-lg text-xs transition-all border border-zinc-700"
+                              >
+                                Decline
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4 bg-zinc-950/50 border border-zinc-800 rounded-xl text-center">
+                            <span className="text-[10px] text-zinc-500 uppercase font-bold block tracking-wider">RTM ACTIVE</span>
+                            <span className="text-xs font-bold text-amber-400 mt-1 block">
+                              Waiting for {rtmTeam?.name} to respond...
+                            </span>
+                          </div>
+                        )
+                      ) : (
+                        <>
+                          <button
+                            onClick={handlePlaceBid}
+                            disabled={curBidderId === assignedTeamId}
+                            className={`px-8 py-4 text-zinc-950 font-black rounded-xl shadow-lg text-sm tracking-wide transition-all uppercase flex items-center justify-center gap-2 ${
+                              curBidderId === assignedTeamId 
+                                ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700 shadow-none' 
+                                : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 hover:shadow-emerald-950/20'
+                            }`}
+                          >
+                            <span>{curBidderId === assignedTeamId ? 'Highest Bidder' : `Bid ₹${nextBidAmount} Cr`}</span>
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                          <span className="text-[9px] text-zinc-500 text-center font-bold uppercase tracking-wider block">
+                            {curBidderId === assignedTeamId ? 'You currently hold the top spot' : 'Click to submit next bid increment'}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-12 text-center flex-grow flex flex-col justify-center items-center gap-4">

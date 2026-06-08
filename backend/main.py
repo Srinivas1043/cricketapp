@@ -689,7 +689,7 @@ async def join_room(req: RoomJoin, db: AsyncSession = Depends(get_db)):
     return {"room_code": room.code, "assigned_team_id": team_to_assign.id}
 
 @app.post("/api/rooms/{code}/start-auction")
-async def start_auction(code: str, db: AsyncSession = Depends(get_db)):
+async def start_auction(code: str, exclude_ai: bool = Query(False), db: AsyncSession = Depends(get_db)):
     res = await db.execute(
         select(Room)
         .where(Room.code == code)
@@ -701,6 +701,28 @@ async def start_auction(code: str, db: AsyncSession = Depends(get_db)):
         
     if room.status != "LOBBY":
         raise HTTPException(status_code=400, detail="Auction already started.")
+        
+    # Exclude AI teams if requested, maintaining even matchups
+    if exclude_ai:
+        human_teams = [t for t in room.teams if not t.is_ai]
+        ai_teams = [t for t in room.teams if t.is_ai]
+        h_count = len(human_teams)
+        
+        if h_count <= 1:
+            keep_ai_count = 1
+        elif h_count % 2 == 0:
+            keep_ai_count = 0
+        else:
+            keep_ai_count = 1
+            
+        teams_to_keep = human_teams + ai_teams[:keep_ai_count]
+        teams_to_delete = ai_teams[keep_ai_count:]
+        
+        for t in teams_to_delete:
+            await db.delete(t)
+            
+        room.teams = teams_to_keep
+        await db.flush()
         
     # 1. Seed players from global template table into room_players
     res_players = await db.execute(select(Player))

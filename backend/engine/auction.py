@@ -23,24 +23,24 @@ def evaluate_player_valuation(player: Dict[str, Any], team: Dict[str, Any]) -> f
       - Team budget remaining
       - Team squad gaps (needs more batsmen, bowlers, etc.)
     """
-    role = player["role"]
-    base_price = player["base_price"]
+    role = player.get("role") or player.get("player", {}).get("role")
+    base_price = player.get("base_price") or player.get("player", {}).get("base_price", 0.0)
     
     # 1. Base Stat Valuation
     stat_val = base_price
     if role == "batsman":
         # high strike rate and average boost value
-        stat_val += (player["strike_rate"] - 120) * 0.03 + (player["batting_avg"] - 25) * 0.08
+        stat_val += (player.get("strike_rate", 120) - 120) * 0.03 + (player.get("batting_avg", 25) - 25) * 0.08
     elif role == "bowler":
         # low economy and low bowling average boost value
-        stat_val += (8.5 - player["bowling_economy"]) * 0.4 + (30.0 - player["bowling_avg"]) * 0.05
+        stat_val += (8.5 - player.get("bowling_economy", 8.5)) * 0.4 + (30.0 - player.get("bowling_avg", 30)) * 0.05
     elif role == "allrounder":
         # performs both roles
-        bat_component = (player["strike_rate"] - 120) * 0.02 + (player["batting_avg"] - 20) * 0.05
-        bowl_component = (8.5 - player["bowling_economy"]) * 0.2 + (30.0 - player["bowling_avg"]) * 0.03
+        bat_component = (player.get("strike_rate", 120) - 120) * 0.02 + (player.get("batting_avg", 20) - 20) * 0.05
+        bowl_component = (8.5 - player.get("bowling_economy", 8.5)) * 0.2 + (30.0 - player.get("bowling_avg", 30)) * 0.03
         stat_val += bat_component + bowl_component + 0.50 # premium for allrounder
     elif role == "wicketkeeper":
-        stat_val += (player["strike_rate"] - 120) * 0.02 + (player["batting_avg"] - 25) * 0.06 + 0.30 # premium for keeper
+        stat_val += (player.get("strike_rate", 120) - 120) * 0.02 + (player.get("batting_avg", 25) - 25) * 0.06 + 0.30 # premium for keeper
 
     # Ensure valuation is at least base price
     stat_val = max(base_price, stat_val)
@@ -50,7 +50,9 @@ def evaluate_player_valuation(player: Dict[str, Any], team: Dict[str, Any]) -> f
     squad_players = team.get("players", [])
     role_counts = {"batsman": 0, "bowler": 0, "allrounder": 0, "wicketkeeper": 0}
     for p in squad_players:
-        role_counts[p["role"]] = role_counts.get(p["role"], 0) + 1
+        p_role = p.get("role") or p.get("player", {}).get("role")
+        if p_role in role_counts:
+            role_counts[p_role] += 1
         
     squad_size = len(squad_players)
     
