@@ -181,10 +181,10 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
                 "current_player_id": auc_state.current_player_id,
                 "current_bid": auc_state.current_bid,
                 "current_bidder_id": auc_state.current_bidder_id,
-                "timer_ends_at": auc_state.timer_ends_at.isoformat() if auc_state.timer_ends_at else None,
+                "timer_ends_at": f"{auc_state.timer_ends_at.isoformat()}Z" if auc_state.timer_ends_at else None,
                 "rtm_active": auc_state.rtm_active,
                 "rtm_original_team_id": auc_state.rtm_original_team_id,
-                "rtm_timer_ends_at": auc_state.rtm_timer_ends_at.isoformat() if auc_state.rtm_timer_ends_at else None,
+                "rtm_timer_ends_at": f"{auc_state.rtm_timer_ends_at.isoformat()}Z" if auc_state.rtm_timer_ends_at else None,
                 "current_player": {
                     "id": rp.id,
                     "player_id": rp.player_id,
