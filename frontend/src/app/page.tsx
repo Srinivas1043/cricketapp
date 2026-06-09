@@ -167,6 +167,15 @@ export default function GamePage() {
     };
   }, [roomCode, assignedTeamId]);
 
+  const checkBowlerChangeRequirement = (scorecard: any) => {
+    const isBowlingTeam = scorecard.current_innings === 1 
+      ? scorecard.team2_id === assignedTeamId 
+      : scorecard.team1_id === assignedTeamId;
+    if (isBowlingTeam) {
+      setShowBowlerSelect(true);
+    }
+  };
+
   const logger = (msg: string) => {
     console.log(`[GameLobby]: ${msg}`);
   };
