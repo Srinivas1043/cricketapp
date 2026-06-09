@@ -267,9 +267,9 @@ def get_player_seasons(player_name: str) -> Dict[str, List[int]]:
             team2: years[split_idx:]
         }
 
-def get_pick_team_year(room_code: str, pick_number: int) -> Tuple[str, int]:
+def get_pick_team_year(room_code: str, round_num: int) -> Tuple[str, int]:
     import hashlib
-    seed_str = f"{room_code}_pick_{pick_number}"
+    seed_str = f"{room_code}_round_{round_num}"
     h = int(hashlib.md5(seed_str.encode('utf-8')).hexdigest(), 16)
     
     franchises = ["CSK", "MI", "RCB", "KKR", "RR", "DC", "SRH", "LSG", "GT", "PBKS"]
@@ -403,12 +403,13 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
         .where(RoomPlayer.status == "SOLD")
     )
     sold_count = len(res_sold.scalars().all())
-    draft_team, draft_year = get_pick_team_year(room.code, sold_count + 1)
+    round_num = sold_count // len(room.teams) + 1
+    draft_team, draft_year = get_pick_team_year(room.code, round_num)
     
     pick_unsold_players = filter_players_by_team_year(unsold_players, draft_team, draft_year)
     
-    serialized_unsold = [
-        {
+    def _serialize_player(rp):
+        return {
             "id": rp.id,
             "player_id": rp.player_id,
             "team_id": rp.team_id,
@@ -430,15 +431,21 @@ async def serialize_room_state(room_code: str, session: AsyncSession) -> Dict[st
                 "bowling_avg": rp.player.bowling_avg,
                 "base_price": rp.player.base_price,
                 "pitch_suitability": rp.player.pitch_suitability,
+                "ipl_team": getattr(rp.player, "ipl_team", None),
+                "ipl_season": getattr(rp.player, "ipl_season", None)
             }
-        } for rp in pick_unsold_players
-    ]
+        }
+
+    serialized_unsold = [_serialize_player(rp) for rp in pick_unsold_players]
+    serialized_all_unsold = [_serialize_player(rp) for rp in unsold_players]
 
     return {
         "room_code": room.code,
         "room_status": room.status,
+        "draft_timer_seconds": getattr(room, "draft_timer_seconds", 30),
         "teams": serialized_teams,
         "unsold_players": serialized_unsold,
+        "all_unsold_players": serialized_all_unsold,
         "draft_team_short": draft_team,
         "draft_team_full": TEAM_FULL_NAMES.get(draft_team, draft_team),
         "draft_year": draft_year,
@@ -675,8 +682,9 @@ async def run_room_auction_ticker(room_code: str):
                     if not auc_state.timer_ends_at or auc_state.current_bidder_id != active_team.id or auc_state.current_bid != float(sold_count + 1):
                         auc_state.current_bidder_id = active_team.id
                         auc_state.current_bid = float(sold_count + 1)
-                        # Turn ends in 30 seconds
-                        auc_state.timer_ends_at = datetime.utcnow() + timedelta(seconds=30)
+                        # Turn ends in draft_timer_seconds (if 0, give them 1 year so it never times out)
+                        timer_len = room.draft_timer_seconds if room.draft_timer_seconds > 0 else 365*24*3600
+                        auc_state.timer_ends_at = datetime.utcnow() + timedelta(seconds=timer_len)
                         await session.commit()
                         
                         serialized_state = await serialize_room_state(room_code, session)
@@ -692,12 +700,13 @@ async def run_room_auction_ticker(room_code: str):
                     unsold_players = [p for p in room_players if p.status == "UNSOLD"]
                     
                     # Filter draft pool by pick team and year
-                    draft_team, draft_year = get_pick_team_year(room_code, sold_count + 1)
+                    draft_team, draft_year = get_pick_team_year(room_code, round_num)
                     pick_unsold = filter_players_by_team_year(unsold_players, draft_team, draft_year)
                     
                     if active_team.is_ai:
                         # Wait 2 seconds before making choice to look natural
-                        time_elapsed = (datetime.utcnow() - (auc_state.timer_ends_at - timedelta(seconds=30))).total_seconds()
+                        timer_len = room.draft_timer_seconds if room.draft_timer_seconds > 0 else 365*24*3600
+                        time_elapsed = (datetime.utcnow() - (auc_state.timer_ends_at - timedelta(seconds=timer_len))).total_seconds()
                         if time_elapsed >= 2.0:
                             best_rp = await ai_draft_pick(pick_unsold, active_team, session)
                             if best_rp:
@@ -747,7 +756,7 @@ async def create_room(req: RoomCreate, db: AsyncSession = Depends(get_db)):
     while (await db.execute(select(Room).where(Room.code == code))).scalar_one_or_none() is not None:
         code = generate_room_code()
         
-    room = Room(code=code, status="LOBBY")
+    room = Room(code=code, status="LOBBY", draft_timer_seconds=req.draft_timer_seconds)
     db.add(room)
     await db.flush() # get room.id
     
@@ -942,8 +951,9 @@ async def draft_player(code: str, req: DraftRequest, db: AsyncSession = Depends(
     
     sold_players = [p for p in room_players if p.status == "SOLD"]
     sold_count = len(sold_players)
+    round_num = sold_count // len(room.teams) + 1
     
-    draft_team, draft_year = get_pick_team_year(room.code, sold_count + 1)
+    draft_team, draft_year = get_pick_team_year(room.code, round_num)
     unsold_players = [p for p in room_players if p.status == "UNSOLD"]
     pick_unsold_players = filter_players_by_team_year(unsold_players, draft_team, draft_year)
     pick_unsold_ids = {p.id for p in pick_unsold_players}
@@ -1258,6 +1268,30 @@ async def simulate_match_ball(match_id: str, db: AsyncSession = Depends(get_db))
             logger.info(f"Auto-assigning starting 11 for team {t_dict['name']}")
             # Sort by base stats/role to select best playing XI
             players_sorted = sorted(t_dict["players"], key=lambda x: x["player"]["base_price"], reverse=True)
+            
+            # Fill with dummy players if less than 11
+            while len(players_sorted) < 11:
+                is_bowler = len([p for p in players_sorted if p["player"]["role"] in ["bowler", "allrounder"]]) < 5
+                dummy = {
+                    "id": f"dummy_{len(players_sorted)}_{t_dict['id']}",
+                    "player": {
+                        "name": f"Substitute {'Bowler' if is_bowler else 'Batsman'} {len(players_sorted)}",
+                        "role": "bowler" if is_bowler else "batsman",
+                        "batting_avg": 10.0,
+                        "strike_rate": 80.0,
+                        "bowling_economy": 10.0,
+                        "bowling_avg": 45.0,
+                        "base_price": 0.0,
+                        "pitch_suitability": "NEUTRAL"
+                    },
+                    "current_form": 0.5,
+                    "fitness": 1.0,
+                    "starting_11": True,
+                    "batting_order": len(players_sorted) + 1,
+                    "bowling_order": 0
+                }
+                players_sorted.append(dummy)
+
             for idx, p in enumerate(players_sorted[:11]):
                 p["starting_11"] = True
                 p["batting_order"] = idx + 1
@@ -1271,18 +1305,23 @@ async def simulate_match_ball(match_id: str, db: AsyncSession = Depends(get_db))
             
     # Load simulator
     if match_id not in active_simulators:
+        def flatten_player(p):
+            flat = dict(p)
+            flat.update(p["player"])
+            return flat
+            
         match_data = {
             "team1": {
                 "id": t1_serialized["id"],
                 "name": t1_serialized["name"],
                 "short_name": t1_serialized["short_name"],
-                "starting_11": [p for p in t1_serialized["players"] if p["starting_11"]]
+                "starting_11": [flatten_player(p) for p in t1_serialized["players"] if p["starting_11"]]
             },
             "team2": {
                 "id": t2_serialized["id"],
                 "name": t2_serialized["name"],
                 "short_name": t2_serialized["short_name"],
-                "starting_11": [p for p in t2_serialized["players"] if p["starting_11"]]
+                "starting_11": [flatten_player(p) for p in t2_serialized["players"] if p["starting_11"]]
             },
             "venue": match.venue,
             "pitch_type": "NEUTRAL",
@@ -1353,6 +1392,99 @@ async def simulate_match_ball(match_id: str, db: AsyncSession = Depends(get_db))
     })
     
     return ball_event
+
+@app.post("/api/match/{match_id}/simulate-full")
+async def simulate_full_match(match_id: str, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(Match).where(Match.id == match_id).options(selectinload(Match.team1), selectinload(Match.team2)))
+    match = res.scalar_one_or_none()
+    if not match: raise HTTPException(status_code=404, detail="Match not found")
+    if match.status == "COMPLETED": return {"status": "SUCCESS"}
+    
+    t1_serialized = await serialize_team(match.team1, db)
+    t2_serialized = await serialize_team(match.team2, db)
+    for t_dict in [t1_serialized, t2_serialized]:
+        s11 = [p for p in t_dict["players"] if p["starting_11"]]
+        if len(s11) < 11:
+            players_sorted = sorted(t_dict["players"], key=lambda x: x["player"]["base_price"], reverse=True)
+            while len(players_sorted) < 11:
+                is_bowler = len([p for p in players_sorted if p["player"]["role"] in ["bowler", "allrounder"]]) < 5
+                dummy = {
+                    "id": f"dummy_{len(players_sorted)}_{t_dict['id']}",
+                    "player": {"name": f"Substitute {'Bowler' if is_bowler else 'Batsman'} {len(players_sorted)}", "role": "bowler" if is_bowler else "batsman", "batting_avg": 10.0, "strike_rate": 80.0, "bowling_economy": 10.0, "bowling_avg": 45.0, "base_price": 0.0, "pitch_suitability": "NEUTRAL"},
+                    "current_form": 0.5, "fitness": 1.0, "starting_11": True, "batting_order": len(players_sorted) + 1, "bowling_order": 0
+                }
+                players_sorted.append(dummy)
+            for idx, p in enumerate(players_sorted[:11]):
+                p["starting_11"] = True
+                p["batting_order"] = idx + 1
+            bowlers = [p for p in players_sorted[:11] if p["player"]["role"] in ["bowler", "allrounder"]]
+            for idx, p in enumerate(bowlers):
+                p["bowling_order"] = idx + 1
+            t_dict["players"] = players_sorted
+
+    if match_id not in active_simulators:
+        def flatten_player(p):
+            flat = dict(p)
+            flat.update(p["player"])
+            return flat
+        match_data = {
+            "team1": {"id": t1_serialized["id"], "name": t1_serialized["name"], "short_name": t1_serialized["short_name"], "starting_11": [flatten_player(p) for p in t1_serialized["players"] if p["starting_11"]]},
+            "team2": {"id": t2_serialized["id"], "name": t2_serialized["name"], "short_name": t2_serialized["short_name"], "starting_11": [flatten_player(p) for p in t2_serialized["players"] if p["starting_11"]]},
+            "venue": match.venue, "pitch_type": "NEUTRAL", "scorecard": match.scorecard
+        }
+        active_simulators[match_id] = MatchSimulator(match_data)
+        active_simulators[match_id].start_innings()
+        
+    sim = active_simulators[match_id]
+    
+    # Simulate full match silently
+    while sim.scorecard["status"] != "COMPLETED":
+        curr_inn_num = sim.scorecard["current_innings_num"]
+        inn_key = "innings1" if curr_inn_num == 1 else "innings2"
+        ball_event = sim.simulate_ball()
+        
+        if ball_event.get("over_completed") and not ball_event.get("match_complete") and not ball_event.get("innings_change"):
+            bowling_pool = sim.scorecard[inn_key]["bowling"]
+            valid_bowlers = [b for b in bowling_pool if b["balls"] < 24 and b["id"] != sim.scorecard.get("current_bowler_id")]
+            if not valid_bowlers: valid_bowlers = [b for b in bowling_pool if b["balls"] < 24]
+            if valid_bowlers:
+                next_bowler = min(valid_bowlers, key=lambda x: x["overs"])
+                sim.change_bowler(next_bowler["id"])
+                
+    # Match is now COMPLETED
+    match.scorecard = sim.scorecard
+    match.status = sim.scorecard["status"]
+    match.innings1_score = sim.scorecard["innings1"]["total_runs"]
+    match.innings1_wickets = sim.scorecard["innings1"]["total_wickets"]
+    match.innings1_overs = sim.scorecard["innings1"]["total_overs"]
+    match.innings2_score = sim.scorecard["innings2"]["total_runs"]
+    match.innings2_wickets = sim.scorecard["innings2"]["total_wickets"]
+    match.innings2_overs = sim.scorecard["innings2"]["total_overs"]
+    match.result = sim.scorecard["result"]
+    
+    # Recalculate standings
+    res_r = await db.execute(select(Room).where(Room.id == match.room_id))
+    room = res_r.scalar_one()
+    res_teams = await db.execute(select(Team).where(Team.room_id == room.id))
+    teams = res_teams.scalars().all()
+    teams_dicts = [{"id": t.id, "name": t.name, "short_name": t.short_name, "is_ai": t.is_ai} for t in teams]
+    res_matches = await db.execute(select(Match).where(Match.room_id == room.id))
+    matches = res_matches.scalars().all()
+    matches_dicts = [{"status": m.status, "team1_id": m.team1_id, "team2_id": m.team2_id, "scorecard": m.scorecard} for m in matches]
+    standings = recalculate_standings(teams_dicts, matches_dicts)
+    for st in standings:
+        await db.execute(update(Team).where(Team.id == st["id"]).values(wins=st["wins"], losses=st["losses"], points=st["points"], nrr=st["nrr"]))
+        
+    del active_simulators[match_id]
+    await db.commit()
+    
+    await manager.broadcast(room.code, {
+        "type": "MATCH_BALL_EVENT",
+        "match_id": match_id,
+        "event": ball_event,
+        "scorecard": sim.scorecard
+    })
+    return {"status": "SUCCESS", "scorecard": sim.scorecard}
 
 @app.post("/api/match/{match_id}/decision")
 async def handle_match_decision(match_id: str, req: MatchDecisionRequest, db: AsyncSession = Depends(get_db)):

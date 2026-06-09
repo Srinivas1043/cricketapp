@@ -55,6 +55,8 @@ export default function GamePage() {
   const [draftSeasonFilter, setDraftSeasonFilter] = useState<string>('all'); // IPL season filter (2023, 2024, etc)
   const [draftingPlayerId, setDraftingPlayerId] = useState<string | null>(null);
   const [playerCarouselView, setPlayerCarouselView] = useState(false); // NEW: toggle carousel view
+  const [showGlobalPool, setShowGlobalPool] = useState(false); // NEW: toggle to view all players
+  const [draftTimerSelection, setDraftTimerSelection] = useState(30);
 
   // Match center state
   const [activeMatch, setActiveMatch] = useState<Match | null>(null);
@@ -71,6 +73,12 @@ export default function GamePage() {
   const playerCarouselRef = useRef<HTMLDivElement>(null); // NEW: for carousel scrolling
   const [timerDisplay, setTimerDisplay] = useState(15);
   const commEndRef = useRef<HTMLDivElement>(null);
+
+  // Keep a ref of activeMatch for the WebSocket handler to avoid stale closures
+  const activeMatchRef = useRef<Match | null>(null);
+  useEffect(() => {
+    activeMatchRef.current = activeMatch;
+  }, [activeMatch]);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -198,7 +206,7 @@ export default function GamePage() {
         fetchTournamentInfo();
         break;
       case 'MATCH_BALL_EVENT':
-        if (activeMatch && msg.match_id === activeMatch.id) {
+        if (activeMatchRef.current && msg.match_id === activeMatchRef.current.id) {
           setMatchScorecard(msg.scorecard);
           const lastBall = msg.event;
           setMatchCommentary((prev) => [lastBall, ...prev]);
@@ -210,7 +218,7 @@ export default function GamePage() {
         }
         break;
       case 'MATCH_DRS_EVENT':
-        if (activeMatch && msg.match_id === activeMatch.id) {
+        if (activeMatchRef.current && msg.match_id === activeMatchRef.current.id) {
           setMatchScorecard(msg.scorecard);
           setDrsStatus({
             status: msg.drs_result.status,
@@ -315,7 +323,7 @@ export default function GamePage() {
     setLoading(true);
     setError('');
     try {
-      const res = await api.createRoom(username);
+      const res = await api.createRoom(username, draftTimerSelection);
       // Host team is creator
       const myTeam = res.teams.find(t => !t.is_ai);
       if (myTeam) {
@@ -413,82 +421,20 @@ export default function GamePage() {
     setSelectedBowlerId('');
   };
 
-  const handleNextBall = async () => {
+  const handleSimulateFull = async () => {
     if (!activeMatch) return;
     try {
-      const res = await api.simulateBall(activeMatch.id);
-      if (res.match_complete) {
-        setMatchBalling(false);
+      setMatchBalling(true);
+      const res = await api.simulateFullMatch(activeMatch.id);
+      if (res.status === 'SUCCESS') {
+        setMatchScorecard(res.scorecard);
         fetchTournamentInfo();
       }
     } catch (err: any) {
       console.error(err);
-    }
-  };
-
-  // Auto Play Over
-  useEffect(() => {
-    let interval: any;
-    if (matchBalling && activeMatch && !showBowlerSelect) {
-      interval = setInterval(() => {
-        handleNextBall();
-      }, 1000); // 1 ball per second
-    }
-    return () => clearInterval(interval);
-  }, [matchBalling, activeMatch, showBowlerSelect]);
-
-  const checkBowlerChangeRequirement = (sc: any) => {
-    const isUserBowling = (sc.current_innings_num === 1 && sc.innings1.team_id !== assignedTeamId) || 
-                          (sc.current_innings_num === 2 && sc.innings2.team_id !== assignedTeamId);
-                          
-    if (isUserBowling) {
+      alert(err.message || "Simulation failed.");
+    } finally {
       setMatchBalling(false);
-      setShowBowlerSelect(true);
-    } else {
-      // AI automatically picks next bowler
-      setTimeout(async () => {
-        const inn_key = sc.current_innings_num === 1 ? "innings1" : "innings2";
-        const bowling_pool = sc[inn_key].bowling;
-        // select eligible bowler with least balls bowled
-        const eligible = bowling_pool.filter((b: any) => b.balls < 24 && b.id !== sc.current_bowler_id);
-        if (eligible.length > 0) {
-          const nextB = eligible[Math.floor(Math.random() * eligible.length)];
-          try {
-            await api.matchDecision(activeMatch!.id, {
-              decision_type: 'BOWLER_CHANGE',
-              details: { bowler_id: nextB.id }
-            });
-          } catch (e) {
-            console.error("AI bowler change failed", e);
-          }
-        }
-      }, 500);
-    }
-  };
-
-  const handleSelectBowler = async () => {
-    if (!activeMatch || !selectedBowlerId) return;
-    try {
-      await api.matchDecision(activeMatch.id, {
-        decision_type: 'BOWLER_CHANGE',
-        details: { bowler_id: selectedBowlerId }
-      });
-      setShowBowlerSelect(false);
-      setSelectedBowlerId('');
-    } catch (err: any) {
-      alert(err.message || "Cannot change bowler.");
-    }
-  };
-
-  const handleDRSReview = async () => {
-    if (!activeMatch || !matchScorecard) return;
-    try {
-      await api.matchDecision(activeMatch.id, {
-        decision_type: 'DRS',
-        details: { team_id: assignedTeamId }
-      });
-    } catch (err: any) {
-      alert(err.message);
     }
   };
 
@@ -684,6 +630,20 @@ export default function GamePage() {
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full bg-zinc-950/80 border border-zinc-800 focus:border-emerald-500 rounded-xl px-4 py-3 text-sm focus:outline-none transition-all placeholder:text-zinc-600"
               />
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-zinc-400 font-bold mb-2 mt-4">
+                Draft Timer Duration
+              </label>
+              <select
+                value={draftTimerSelection}
+                onChange={(e) => setDraftTimerSelection(Number(e.target.value))}
+                className="w-full bg-zinc-950/80 border border-zinc-800 focus:border-emerald-500 rounded-xl px-4 py-3 text-sm focus:outline-none transition-all text-zinc-200"
+              >
+                <option value={30}>30 Seconds (Default)</option>
+                <option value={60}>60 Seconds</option>
+                <option value={90}>90 Seconds</option>
+                <option value={0}>No Time Limit (∞)</option>
+              </select>
             </div>
 
             <div className="grid grid-cols-1 gap-4 pt-2">
@@ -926,8 +886,9 @@ export default function GamePage() {
       }
     }
 
-    // Filter and search available players
-    const filteredUnsold = (roomState.unsold_players || []).filter((rp) => {
+    const activeUnsoldPlayers = (showGlobalPool ? roomState?.all_unsold_players : roomState?.unsold_players) || [];
+
+    const filteredUnsold = activeUnsoldPlayers.filter((rp: any) => {
       // 1. Search Query
       if (draftSearchQuery.trim() !== '') {
         const query = draftSearchQuery.toLowerCase();
@@ -940,14 +901,6 @@ export default function GamePage() {
       // 3. Nationality Filter
       if (draftNationalityFilter !== 'all') {
         if (rp.player.nationality !== draftNationalityFilter) return false;
-      }
-      // 4. IPL Team Filter
-      if (draftTeamFilter !== 'all') {
-        if (rp.player.ipl_team !== draftTeamFilter) return false;
-      }
-      // 5. IPL Season Filter
-      if (draftSeasonFilter !== 'all') {
-        if (rp.player.ipl_season !== parseInt(draftSeasonFilter)) return false;
       }
       return true;
     });
@@ -992,7 +945,7 @@ export default function GamePage() {
         </header>
 
         {/* Main Workspace Layout - Mobile Responsive Grid */}
-        <div className="flex-grow grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 p-3 md:p-6 overflow-hidden max-h-[calc(100vh-100px)]">
+        <div className="flex-grow grid grid-cols-1 grid-rows-[minmax(0,1fr)] md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 p-3 md:p-6 overflow-hidden max-h-[calc(100vh-100px)]">
           
           {/* Column 1 (Left): Franchises Status list - Hidden on mobile, 25% on lg */}
           <section className="hidden md:flex bg-zinc-900/40 border border-zinc-800 rounded-3xl p-4 md:p-5 flex-col gap-4 overflow-y-auto max-h-full">
@@ -1075,7 +1028,7 @@ export default function GamePage() {
           </section>
 
           {/* Column 2 & 3: Arena Clock, Queue, Available Players list */}
-          <section className="lg:col-span-2 flex flex-col gap-4 overflow-hidden max-h-full">
+          <section className="lg:col-span-2 flex flex-col gap-4 overflow-hidden max-h-full min-h-0">
             
             {/* Top Draft Banner & Clock Panel */}
             <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-5 shadow-lg relative overflow-hidden flex-shrink-0 space-y-4">
@@ -1083,9 +1036,9 @@ export default function GamePage() {
               <div className="absolute top-0 left-0 right-0 h-1 bg-zinc-950 overflow-hidden">
                 <div 
                   className={`h-full transition-all duration-1000 ease-linear ${
-                    timerDisplay <= 5 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'
+                    timerDisplay <= 5 && roomState?.draft_timer_seconds !== 0 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'
                   }`}
-                  style={{ width: `${(timerDisplay / 30) * 100}%` }}
+                  style={{ width: `${roomState?.draft_timer_seconds === 0 ? 100 : (timerDisplay / (roomState?.draft_timer_seconds || 30)) * 100}%` }}
                 />
               </div>
 
@@ -1109,9 +1062,9 @@ export default function GamePage() {
 
                 {/* Clock indicator */}
                 <div className="flex items-center gap-2 px-4 py-2 bg-zinc-950 border border-zinc-850 rounded-2xl">
-                  <Timer className={`w-4 h-4 ${timerDisplay <= 5 ? 'text-red-500 animate-bounce' : 'text-zinc-500'}`} />
-                  <span className={`text-lg font-mono font-black ${timerDisplay <= 5 ? 'text-red-500' : 'text-zinc-200'}`}>
-                    {timerDisplay}s
+                  <Timer className={`w-4 h-4 ${timerDisplay <= 5 && roomState?.draft_timer_seconds !== 0 ? 'text-red-500 animate-bounce' : 'text-zinc-500'}`} />
+                  <span className={`text-lg font-mono font-black ${timerDisplay <= 5 && roomState?.draft_timer_seconds !== 0 ? 'text-red-500' : 'text-zinc-200'}`}>
+                    {roomState?.draft_timer_seconds === 0 ? '∞' : `${timerDisplay}s`}
                   </span>
                 </div>
               </div>
@@ -1144,10 +1097,22 @@ export default function GamePage() {
             </div>
 
             {/* Available Players & Filters */}
-            <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-5 flex flex-col gap-4 overflow-hidden flex-grow max-h-full">
+            <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-5 flex flex-col gap-4 overflow-hidden flex-1 max-h-full min-h-0">
               
               {/* Category selector & Filter inputs */}
               <div className="space-y-3 flex-shrink-0">
+                <div className="bg-gradient-to-r from-emerald-950/40 to-zinc-900 border border-emerald-900/30 rounded-2xl p-4 mb-2 flex flex-col md:flex-row items-center justify-between gap-4">
+                  <div>
+                    <span className="text-[10px] text-emerald-500 uppercase font-black tracking-widest block">CURRENT ROUND DRAFT POOL</span>
+                    <h2 className="text-xl font-black mt-1 text-zinc-100 flex items-center gap-2">
+                      🏆 {roomState.draft_team_full || 'Loading...'} • <span className="text-emerald-400">{roomState.draft_year || 'Season'}</span>
+                    </h2>
+                  </div>
+                  <div className="text-right text-xs text-zinc-400">
+                    All players must draft from<br/>this specific team and season.
+                  </div>
+                </div>
+                
                 <div className="flex flex-col gap-3 justify-between">
                   {/* Search and Nationality filter row */}
                   <div className="flex flex-col sm:flex-row gap-2">
@@ -1169,39 +1134,6 @@ export default function GamePage() {
                       <option value="Overseas">✈️ Overseas</option>
                     </select>
 
-                    {/* IPL Team Filter */}
-                    <select
-                      value={draftTeamFilter}
-                      onChange={(e: any) => setDraftTeamFilter(e.target.value)}
-                      className="bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-2 py-2 text-xs focus:outline-none text-zinc-300 whitespace-nowrap"
-                    >
-                      <option value="all">All IPL Teams</option>
-                      <option value="CSK">CSK</option>
-                      <option value="MI">MI</option>
-                      <option value="RCB">RCB</option>
-                      <option value="DC">DC</option>
-                      <option value="KKR">KKR</option>
-                      <option value="SRH">SRH</option>
-                      <option value="RR">RR</option>
-                      <option value="PBKS">PBKS</option>
-                      <option value="GT">GT</option>
-                      <option value="LSG">LSG</option>
-                      <option value="BAN">BAN</option>
-                    </select>
-
-                    {/* IPL Season Filter */}
-                    <select
-                      value={draftSeasonFilter}
-                      onChange={(e: any) => setDraftSeasonFilter(e.target.value)}
-                      className="bg-zinc-950 border border-zinc-855 focus:border-emerald-500 rounded-xl px-2 py-2 text-xs focus:outline-none text-zinc-300 whitespace-nowrap"
-                    >
-                      <option value="all">All Seasons</option>
-                      <option value="2024">2024</option>
-                      <option value="2023">2023</option>
-                      <option value="2022">2022</option>
-                      <option value="2021">2021</option>
-                    </select>
-
                     {/* View toggle - carousel or list */}
                     <button
                       onClick={() => setPlayerCarouselView(!playerCarouselView)}
@@ -1213,17 +1145,29 @@ export default function GamePage() {
                     >
                       {playerCarouselView ? '🎠 Carousel' : '📋 List'}
                     </button>
+
+                    {/* View all players toggle */}
+                    <button
+                      onClick={() => setShowGlobalPool(!showGlobalPool)}
+                      className={`px-3 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
+                        showGlobalPool
+                          ? 'bg-emerald-950/40 border border-emerald-700 text-emerald-400'
+                          : 'bg-zinc-950 border border-zinc-855 text-zinc-400 hover:text-zinc-300'
+                      }`}
+                    >
+                      {showGlobalPool ? '🔓 Global DB' : '🔒 Strict Round'}
+                    </button>
                   </div>
                 </div>
 
                 {/* Role Tabs */}
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 border-b border-zinc-900 scrollbar-thin">
                   {[
-                    { id: 'all', name: 'All Players', count: (roomState.unsold_players || []).length },
-                    { id: 'batsman', name: '🏏 Batsmen', count: (roomState.unsold_players || []).filter(p => p.player.role === 'batsman').length },
-                    { id: 'wicketkeeper', name: '🧤 Keepers', count: (roomState.unsold_players || []).filter(p => p.player.role === 'wicketkeeper').length },
-                    { id: 'allrounder', name: '⚡ Allrounders', count: (roomState.unsold_players || []).filter(p => p.player.role === 'allrounder').length },
-                    { id: 'bowler', name: 'Bowlers ⚾', count: (roomState.unsold_players || []).filter(p => p.player.role === 'bowler').length },
+                    { id: 'all', name: 'All Players', count: activeUnsoldPlayers.length },
+                    { id: 'batsman', name: '🏏 Batsmen', count: activeUnsoldPlayers.filter((p: any) => p.player.role === 'batsman').length },
+                    { id: 'wicketkeeper', name: '🧤 Keepers', count: activeUnsoldPlayers.filter((p: any) => p.player.role === 'wicketkeeper').length },
+                    { id: 'allrounder', name: '⚡ Allrounders', count: activeUnsoldPlayers.filter((p: any) => p.player.role === 'allrounder').length },
+                    { id: 'bowler', name: 'Bowlers ⚾', count: activeUnsoldPlayers.filter((p: any) => p.player.role === 'bowler').length },
                   ].map((tab) => (
                     <button
                       key={tab.id}
@@ -1246,7 +1190,7 @@ export default function GamePage() {
               {/* Player list/carousel viewport */}
               {!playerCarouselView ? (
                 // LIST VIEW
-                <div className="flex-grow overflow-y-auto pr-1 space-y-3 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+                <div className="flex-1 overflow-y-scroll pr-1 space-y-3 min-h-0 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-zinc-900/40">
                   {sortedFilteredUnsold.length === 0 ? (
                     <div className="text-center py-16 text-zinc-500 italic text-xs">
                       No available players match your search filter.
@@ -1334,7 +1278,7 @@ export default function GamePage() {
                 </div>
               ) : (
                 // CAROUSEL VIEW
-                <div className="flex-grow flex flex-col gap-2 overflow-hidden">
+                <div className="flex-1 flex flex-col gap-2 overflow-hidden min-h-0">
                   {sortedFilteredUnsold.length === 0 ? (
                     <div className="text-center py-16 text-zinc-500 italic text-xs">
                       No available players match your search filter.
@@ -1344,7 +1288,7 @@ export default function GamePage() {
                       {/* Carousel Container */}
                       <div 
                         ref={playerCarouselRef}
-                        className="flex overflow-x-auto gap-3 pb-2 scrollbar-thin scrollbar-thumb-emerald-700 scrollbar-track-zinc-900 flex-grow"
+                        className="flex overflow-x-auto gap-3 pb-2 scrollbar-thin scrollbar-thumb-emerald-700 scrollbar-track-zinc-900 flex-1"
                         style={{ scrollBehavior: 'smooth' }}
                       >
                         {sortedFilteredUnsold.map((rp, idx) => {
@@ -1698,99 +1642,20 @@ export default function GamePage() {
                 )}
               </div>
             ) : (
-              <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-12 text-center flex items-center justify-center min-h-[200px]">
-                <div className="flex flex-col items-center gap-2">
-                  <Radio className="w-8 h-8 text-emerald-400/40 animate-pulse" />
-                  <span className="font-black text-zinc-400">Waiting for first delivery...</span>
-                  <button 
-                    onClick={handleNextBall}
-                    className="mt-4 px-6 py-2.5 bg-emerald-500 text-zinc-950 font-black rounded-xl text-xs uppercase"
-                  >
-                    Simulate Coin Toss & Start Match
-                  </button>
-                </div>
+              <div className="bg-zinc-900/60 border border-zinc-800 rounded-3xl p-12 text-center flex flex-col items-center justify-center min-h-[200px] gap-4">
+                <Radio className="w-8 h-8 text-emerald-400/40 animate-pulse" />
+                <span className="font-black text-zinc-400">Match is ready to begin.</span>
+                <button 
+                  onClick={handleSimulateFull}
+                  disabled={matchBalling}
+                  className="px-6 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black rounded-xl text-xs uppercase shadow-md transition-all disabled:opacity-50"
+                >
+                  {matchBalling ? 'Simulating Match...' : 'Simulate Match Instantly'}
+                </button>
               </div>
             )}
 
-            {/* User Interaction decision Panels */}
-            {matchScorecard && !isCompleted && (
-              <div className="bg-zinc-900/40 border border-zinc-800 rounded-3xl p-6 space-y-4">
-                <h3 className="text-xs uppercase font-extrabold tracking-wider text-zinc-400 pb-2 border-b border-zinc-800">
-                  Franchise Dugout Control Panel
-                </h3>
 
-                <div className="flex flex-wrap gap-4">
-                  {/* Next ball controls */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleNextBall}
-                      disabled={showBowlerSelect || matchBalling}
-                      className="px-5 py-3 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-zinc-950 font-black rounded-xl text-xs uppercase transition-all shadow-md flex items-center gap-1.5"
-                    >
-                      <Play className="w-4 h-4 fill-current" /> Next Ball
-                    </button>
-                    
-                    <button
-                      onClick={() => setMatchBalling(!matchBalling)}
-                      disabled={showBowlerSelect}
-                      className={`px-4 py-3 font-bold rounded-xl text-xs uppercase border transition-all ${
-                        matchBalling 
-                          ? 'bg-amber-950/20 border-amber-500/40 text-amber-300' 
-                          : 'bg-zinc-800 hover:bg-zinc-700 border-zinc-700 text-zinc-300'
-                      }`}
-                    >
-                      {matchBalling ? 'Pause Simulation' : 'Auto Play Over'}
-                    </button>
-                  </div>
-
-                  {/* DRS review button */}
-                  <div>
-                    <button
-                      onClick={handleDRSReview}
-                      disabled={matchScorecard.drs_available[assignedTeamId] <= 0}
-                      className="px-4 py-3 bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 font-extrabold rounded-xl text-xs uppercase transition-all flex items-center gap-1.5"
-                    >
-                      Challenge DRS ({matchScorecard.drs_available[assignedTeamId]} left)
-                    </button>
-                  </div>
-                </div>
-
-                {/* Bowler Change overlay/box */}
-                {showBowlerSelect && (
-                  <div className="p-4 bg-emerald-950/15 border border-emerald-500/30 rounded-xl space-y-3">
-                    <span className="text-xs text-emerald-400 font-black flex items-center gap-1.5">
-                      <AlertTriangle className="w-4 h-4" /> Selector Required: Choose Next Bowler
-                    </span>
-                    <p className="text-[10px] text-zinc-400">
-                      An over completed. You must select who will bowl the next over from your squad:
-                    </p>
-                    
-                    <div className="flex gap-2">
-                      <select
-                        value={selectedBowlerId}
-                        onChange={(e) => setSelectedBowlerId(e.target.value)}
-                        className="bg-zinc-950 border border-zinc-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-0 text-zinc-200"
-                      >
-                        <option value="">-- Choose Bowler --</option>
-                        {eligibleBowlers.map((b: any) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name} ({(b.balls / 6).toFixed(0)}.{b.balls % 6} overs, {b.wickets}W, {b.runs}R)
-                          </option>
-                        ))}
-                      </select>
-                      
-                      <button
-                        onClick={handleSelectBowler}
-                        disabled={!selectedBowlerId}
-                        className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black rounded-lg text-xs transition-all disabled:opacity-50"
-                      >
-                        Assign Bowler
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Show completed card details */}
             {isCompleted && (

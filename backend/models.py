@@ -14,6 +14,7 @@ class Room(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     code = Column(String, unique=True, index=True, nullable=False)
     status = Column(String, default="LOBBY") # LOBBY, AUCTION, MANAGEMENT, TOURNAMENT, FINISHED
+    draft_timer_seconds = Column(Integer, default=30) # Custom timer length for draft (0 means no limit)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

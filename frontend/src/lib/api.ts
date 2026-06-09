@@ -84,6 +84,9 @@ export interface RoomState {
   room_status: string; // 'LOBBY', 'AUCTION', 'MANAGEMENT', 'TOURNAMENT', 'FINISHED'
   teams: Team[];
   unsold_players?: RoomPlayer[];
+  draft_team_short?: string;
+  draft_team_full?: string;
+  draft_year?: number;
   auction_state: {
     room_id: string;
     current_player_id: string | null;
@@ -98,11 +101,11 @@ export interface RoomState {
 }
 
 export const api = {
-  async createRoom(username: string): Promise<RoomResponse> {
+  async createRoom(username: string, draftTimerSeconds: number = 30): Promise<RoomResponse> {
     const res = await fetch(`${API_BASE_URL}/api/rooms`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username }),
+      body: JSON.stringify({ username, draft_timer_seconds: draftTimerSeconds }),
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
@@ -184,6 +187,14 @@ export const api = {
 
   async simulateBall(matchId: string): Promise<any> {
     const res = await fetch(`${API_BASE_URL}/api/match/${matchId}/simulate-ball`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async simulateFullMatch(matchId: string): Promise<any> {
+    const res = await fetch(`${API_BASE_URL}/api/match/${matchId}/simulate-full`, {
       method: 'POST',
     });
     if (!res.ok) throw new Error(await res.text());

@@ -5,6 +5,7 @@ from datetime import datetime
 # --- ROOM SCHEMAS ---
 class RoomCreate(BaseModel):
     username: str = Field(..., min_length=2, max_length=20)
+    draft_timer_seconds: Optional[int] = Field(30, ge=0)
 
 class RoomJoin(BaseModel):
     room_code: str = Field(..., min_length=6, max_length=6)
@@ -113,6 +114,9 @@ class RoomAuctionStateResponse(BaseModel):
     rtm_active: bool
     rtm_original_team_id: Optional[str] = None
     rtm_timer_ends_at: Optional[datetime] = None
+    
+    draft_pool_team: Optional[str] = None
+    draft_pool_year: Optional[int] = None
     
     current_player: Optional[RoomPlayerResponse] = None
 
