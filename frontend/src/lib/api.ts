@@ -88,6 +88,7 @@ export interface RoomState {
   draft_team_short?: string;
   draft_team_full?: string;
   draft_year?: number;
+  draft_timer_seconds?: number;
   auction_state: {
     room_id: string;
     current_player_id: string | null;
