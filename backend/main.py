@@ -54,19 +54,37 @@ async def startup_db():
             await conn.run_sync(Base.metadata.create_all)
             logger.info("✅ Database schema ready")
         
-        # Check if players exist
+        # Check if players exist and if schema is valid
         async_session = AsyncSession(engine, expire_on_commit=False)
         async with async_session as session:
-            result = await session.execute(select(Player))
-            existing_players = result.scalars().all()
-            
-            if len(existing_players) == 0:
-                logger.info("📊 No players found. Seeding database...")
+            try:
+                from backend.models import Room
+                # Test query on Room which contains the new column
+                await session.execute(select(Room).limit(1))
+                
+                # If we get here, the schema is fine. Now check players.
+                result = await session.execute(select(Player))
+                existing_players = result.scalars().all()
+                
+                if len(existing_players) == 0:
+                    logger.info("📊 No players found. Seeding database...")
+                    from backend.seed import seed_database
+                    await seed_database(engine=engine)
+                    logger.info("✅ Database seeded successfully!")
+                else:
+                    logger.info(f"✅ Database ready with {len(existing_players)} players")
+                    
+            except Exception as e:
+                # Usually sqlalchemy.exc.ProgrammingError due to missing columns
+                logger.warning(f"⚠️ Schema mismatch or missing tables detected: {e}")
+                logger.warning("Rebuilding database from scratch...")
+                
+                # Rollback the failed transaction first
+                await session.rollback()
+                
                 from backend.seed import seed_database
-                await seed_database(engine=engine)
-                logger.info("✅ Database seeded successfully!")
-            else:
-                logger.info(f"✅ Database ready with {len(existing_players)} players")
+                await seed_database(engine=engine, drop_existing=True)
+                logger.info("✅ Database schema rebuilt and seeded successfully!")
                 
     except Exception as e:
         logger.error(f"⚠️ Error during database initialization: {e}")
