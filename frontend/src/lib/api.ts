@@ -84,6 +84,7 @@ export interface RoomState {
   room_status: string; // 'LOBBY', 'AUCTION', 'MANAGEMENT', 'TOURNAMENT', 'FINISHED'
   teams: Team[];
   unsold_players?: RoomPlayer[];
+  all_unsold_players?: RoomPlayer[];
   draft_team_short?: string;
   draft_team_full?: string;
   draft_year?: number;
