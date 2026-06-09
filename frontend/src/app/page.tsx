@@ -630,6 +630,7 @@ export default function GamePage() {
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full bg-zinc-950/80 border border-zinc-800 focus:border-emerald-500 rounded-xl px-4 py-3 text-sm focus:outline-none transition-all placeholder:text-zinc-600"
               />
+            </div>
             <div>
               <label className="block text-xs uppercase tracking-wider text-zinc-400 font-bold mb-2 mt-4">
                 Draft Timer Duration
